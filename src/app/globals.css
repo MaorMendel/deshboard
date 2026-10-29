@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #f2f4f1;
+  --color-surface: #ffffff;
+  --color-ink: #1c2826;
+  --color-ink-soft: #56635e;
+  --color-line: #dae1dc;
+  --color-line-strong: #b9c4bd;
+  --color-caller: #e6ebe7;
+
+  /* ירוק של "שיחה פעילה" - הצבע היחיד שמסמן פעולה ובחירה */
+  --color-call: #1d7457;
+  --color-call-strong: #155c45;
+  --color-call-soft: #e2f0e9;
+
+  --color-pending: #8a520b;
+  --color-pending-soft: #fbefd8;
+  --color-danger: #a8322a;
+  --color-danger-soft: #fbe8e5;
+}
+
+@theme inline {
+  --font-sans: var(--font-plex), system-ui, sans-serif;
+}
+
+html {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+body {
+  background: var(--color-paper);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-call);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

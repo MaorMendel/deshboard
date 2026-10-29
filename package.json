@@ -1,0 +1,51 @@
+{
+  "name": "bot-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:studio": "drizzle-kit studio",
+    "db:check": "tsx scripts/check-db.ts",
+    "voices:import": "tsx scripts/cli.ts voices:import",
+    "voices:add": "tsx scripts/cli.ts voices:add",
+    "voices:samples": "tsx scripts/cli.ts voices:samples",
+    "customer:add": "tsx scripts/cli.ts customer:add",
+    "demo:add": "tsx scripts/cli.ts demo:add",
+    "demo:convert": "tsx scripts/cli.ts demo:convert",
+    "link:new": "tsx scripts/cli.ts link:new",
+    "link:revoke": "tsx scripts/cli.ts link:revoke",
+    "tenant:suspend": "tsx scripts/cli.ts tenant:suspend",
+    "tenant:activate": "tsx scripts/cli.ts tenant:activate",
+    "calls:sync": "tsx scripts/cli.ts calls:sync",
+    "check:e2e": "tsx scripts/check-e2e.ts",
+    "dev:local": "tsx scripts/dev-local.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.4",
+    "lucide-react": "^1.61.0",
+    "next": "16.4.3",
+    "postgres": "^3.4.9",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-socket": "^0.2.15",
+    "@tailwindcss/turbopack": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "drizzle-kit": "^0.31.11",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.3",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,1 @@
+ALTER TABLE "voices" ADD COLUMN "provider_config" jsonb;
