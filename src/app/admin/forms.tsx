@@ -102,15 +102,22 @@ export function ActionForm({
   submitLabel,
   children,
   subtle,
+  confirmText,
 }: {
   action: FormAction;
   submitLabel: string;
   children?: React.ReactNode;
   subtle?: boolean;
+  /** אם קיים: שואלים לפני השליחה, וביטול לא שולח כלום */
+  confirmText?: string;
 }) {
   const [result, formAction, pending] = useActionState(action, null);
   return (
-    <form action={formAction} className="flex flex-col gap-3">
+    <form
+      action={formAction}
+      onSubmit={confirmText ? (e) => !window.confirm(confirmText) && e.preventDefault() : undefined}
+      className="flex flex-col gap-3"
+    >
       {children}
       <Feedback result={result} />
       <div>

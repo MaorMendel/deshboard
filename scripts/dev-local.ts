@@ -31,6 +31,9 @@ async function main() {
     VAPI_PRIVATE_KEY: MOCK_KEY,
     VAPI_DEMO_ASSISTANT_ID: "asst_demo",
     VAPI_TEST_PHONE_NUMBER_ID: "pn_test",
+    // ElevenLabs מדומה (על אותו שרת), כדי שאפשר יהיה לנסות "ליצור דוגמה" בלי חשבון
+    ELEVENLABS_BASE_URL: mock.url,
+    ELEVENLABS_API_KEY: MOCK_KEY,
     INTERNAL_API_SECRET: "local-internal-secret-0123456789",
     ADMIN_PASSWORD: "local-admin-1234",
   };

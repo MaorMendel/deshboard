@@ -46,6 +46,15 @@ export async function startMockVapi(key: string, options: MockOptions = {}): Pro
       res.end(JSON.stringify(data));
     };
 
+    // ElevenLabs מדומה, על אותו שרת: יצירת דוגמת שמע. ה-ID "missing..." מדמה קול שלא קיים בחשבון.
+    const tts = url.pathname.match(/^\/v1\/text-to-speech\/([^/]+)$/);
+    if (tts && method === "POST") {
+      if (req.headers["xi-api-key"] !== key) return send(401, { detail: { status: "invalid_api_key" } });
+      if (tts[1].startsWith("missing")) return send(404, { detail: { status: "voice_not_found" } });
+      res.writeHead(200, { "Content-Type": "audio/mpeg" });
+      return res.end(Buffer.from(MOCK_MP3_BASE64, "base64"));
+    }
+
     if (req.headers.authorization !== `Bearer ${key}`) return send(401, { message: "Invalid Key" });
     if (state.failNext && state.failNext.method === method && state.failNext.path.test(url.pathname)) {
       const { status } = state.failNext;
@@ -138,3 +147,7 @@ export function endCall(mock: MockVapi, id: string, seconds: number, cost = 0.1)
     updatedAt: new Date().toISOString(),
   });
 }
+
+/** צליל קצר של חצי שנייה, MP3 אמיתי, כדי שבסביבה המקומית אפשר יהיה באמת לשמוע "דוגמה" */
+const MOCK_MP3_BASE64 =
+  "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";

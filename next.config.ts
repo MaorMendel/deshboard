@@ -3,6 +3,12 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
+  experimental: {
+    serverActions: {
+      // העלאת דוגמת שמע (עד 2MB) בפאנל הניהול. ברירת המחדל היא 1MB.
+      bodySizeLimit: "3mb",
+    },
+  },
   turbopack: {
     rules: {
       "*.css": {
