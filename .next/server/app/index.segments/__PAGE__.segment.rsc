@@ -1,0 +1,31 @@
+1:"$Sreact.fragment"
+2:"/_next/static/chunks/1tq6ppe__m8m-.js"
+3:I[39756,["$2"],"default"]
+4:I[37457,["$2"],"default"]
+9:I[97367,["$2"],"OutletBoundary"]
+a:"$Sreact.suspense"
+e:"ViewportBoundary"
+f:I[97367,["$2"],"$e"]
+10:"MetadataBoundary"
+11:I[97367,["$2"],"$10"]
+12:I[27201,["$2"],"IconMark"]
+:HL["/_next/static/chunks/07_2z0brja9yn.css","style"]
+6:X
+6:C
+7:X
+7:300
+7:C
+d:X
+d:C
+8:[["children",{"s":"__PAGE__","h":49314,"d":{"r":["$","$1","c",{"children":[["$","main",null,{"className":"mx-auto flex min-h-screen w-full max-w-xl flex-col justify-center px-4 py-16 sm:px-6","children":[["$","h1",null,{"className":"text-[28px] font-semibold leading-tight","children":"צריך קישור אישי"}],["$","p",null,{"className":"mt-3 text-lg leading-relaxed text-ink-soft","children":"כדי לנהל את הבוט שלכם, צריך להיכנס דרך הקישור האישי ששלחנו לכם. אם הוא אבד, כדאי לפנות אלינו."}]]}],null,["$","$L9",null,{"children":["$","$a",null,{"name":"Next.MetadataOutlet","children":"$@b"}]}]]}],"p":"$@c","v":"$d","s":"$7"}}]]
+14:X
+14:C
+17:X
+17:C
+0:{"t":{"t":{"s":"","h":49234,"d":{"r":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/07_2z0brja9yn.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/1tq6ppe__m8m-.js","async":true}]],["$","html",null,{"lang":"he","dir":"rtl","className":"X_rPAq_variable h-full antialiased","children":["$","body",null,{"className":"min-h-full font-sans","children":["$","$L3",null,{"parallelRouterKey":"children","template":["$","$L4",null,{}],"notFound":[[["$","title",null,{"children":"404: This page could not be found."}],["$","div",null,{"style":{"fontFamily":"system-ui,\"Segoe UI\",Roboto,Helvetica,Arial,sans-serif,\"Apple Color Emoji\",\"Segoe UI Emoji\"","height":"100vh","textAlign":"center","display":"flex","flexDirection":"column","alignItems":"center","justifyContent":"center"},"children":["$","div",null,{"children":[["$","style",null,{"dangerouslySetInnerHTML":{"__html":"body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}"}}],["$","h1",null,{"className":"next-error-h1","style":{"display":"inline-block","margin":"0 20px 0 0","padding":"0 23px 0 0","fontSize":24,"fontWeight":500,"verticalAlign":"top","lineHeight":"49px"},"children":404}],["$","div",null,{"style":{"display":"inline-block"},"children":["$","h2",null,{"style":{"fontSize":14,"fontWeight":400,"lineHeight":"49px","margin":0},"children":"This page could not be found."}]}]]}]}]],[]]}]}]}]]}],"p":"$@5","v":"$6","s":"$7"},"c":"$Q8"},"h":{"r":["$","$1","h",{"children":[null,["$","$Lf",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","$L11",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$a",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"הבוט שלי"}],["$","meta","1",{"name":"description","content":"הגדרות הבוט הטלפוני של העסק"}],["$","link","2",{"rel":"icon","href":"/favicon.ico?favicon.117ezoe8m31dk.ico","sizes":"48x48","type":"image/x-icon"}],["$","$L12","3",{}]]}]}],null]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"p":"$@13","v":"$14","s":"$7"}},"a":"$@15","u":"$@16","b":"xeUs_psS3th8O2RVy5BCC","r":"$17"}
+b:null
+16:false
+15:null
+5:"$undefined"
+13:"$undefined"
+c:"$undefined"

@@ -1,0 +1,17 @@
+{
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/admin/login/page": "/admin/login",
+  "/admin/new-customer/page": "/admin/new-customer",
+  "/admin/new-demo/page": "/admin/new-demo",
+  "/admin/page": "/admin",
+  "/admin/t/[id]/page": "/admin/t/[id]",
+  "/api/b/[key]/bot/route": "/api/b/[key]/bot",
+  "/api/b/[key]/test-call/route": "/api/b/[key]/test-call",
+  "/api/internal/sync-calls/route": "/api/internal/sync-calls",
+  "/api/internal/usage/route": "/api/internal/usage",
+  "/api/voice-samples/[id]/route": "/api/voice-samples/[id]",
+  "/b/[key]/page": "/b/[key]",
+  "/favicon.ico/route": "/favicon.ico",
+  "/page": "/"
+}
