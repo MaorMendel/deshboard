@@ -15,12 +15,12 @@ import {
 } from "../../actions";
 import { fmtDate, fmtDateTime, fmtSeconds, dateInputValue } from "../../format";
 import { ActionForm, ConfirmButton, CopyLink, Field, inputCls } from "../../forms";
-import { AssistantSelect, PhoneNumberSelect, vapiOptions } from "../../vapi-options";
+import { AssistantSelect, PhoneNumberSelect, RefreshVapiLink, vapiOptions } from "../../vapi-options";
 
-export default function Page({ params }: PageProps<"/admin/t/[id]">) {
+export default function Page({ params, searchParams }: PageProps<"/admin/t/[id]">) {
   return (
     <Suspense fallback={<p className="text-ink-soft">טוען...</p>}>
-      <Detail params={params} />
+      <Detail params={params} searchParams={searchParams} />
     </Suspense>
   );
 }
@@ -46,9 +46,16 @@ function Detail_row({ label, value }: { label: string; value: React.ReactNode })
 const CALL_TYPE: Record<string, string> = { test: "ניסיון", inbound: "נכנסת", outbound: "יוצאת" };
 const CALL_STATUS: Record<string, string> = { ended: "הסתיימה", in_progress: "בשיחה", queued: "ממתינה", failed: "נכשלה" };
 
-async function Detail({ params }: { params: PageProps<"/admin/t/[id]">["params"] }) {
+async function Detail({
+  params,
+  searchParams,
+}: {
+  params: PageProps<"/admin/t/[id]">["params"];
+  searchParams: PageProps<"/admin/t/[id]">["searchParams"];
+}) {
   if (!(await isAdmin())) redirect("/admin/login");
   const { id } = await params;
+  const { fresh } = await searchParams;
 
   let detail: TenantDetail;
   try {
@@ -212,7 +219,7 @@ async function Detail({ params }: { params: PageProps<"/admin/t/[id]">["params"]
 
       {isDemo && (
         <Section title="להפוך ללקוח משלם">
-          <ConvertSection tenantId={tenant.id} />
+          <ConvertSection tenantId={tenant.id} fresh={fresh === "1"} />
         </Section>
       )}
 
@@ -258,8 +265,8 @@ async function Detail({ params }: { params: PageProps<"/admin/t/[id]">["params"]
   );
 }
 
-async function ConvertSection({ tenantId }: { tenantId: string }) {
-  const options = await vapiOptions();
+async function ConvertSection({ tenantId, fresh }: { tenantId: string; fresh: boolean }) {
+  const options = await vapiOptions({ fresh });
   if (!options.configured) {
     return <p className="text-sm text-danger">VAPI_PRIVATE_KEY לא מוגדר בשרת, אי אפשר להמיר דמו.</p>;
   }
@@ -273,9 +280,12 @@ async function ConvertSection({ tenantId }: { tenantId: string }) {
           <Field label="מזהה במערכת הראשית">
             <input name="externalId" required className={inputCls} dir="ltr" />
           </Field>
-          <Field label="ה-assistant של הלקוח">
-            <AssistantSelect options={options} name="assistantId" required />
-          </Field>
+          <div>
+            <Field label="ה-assistant של הלקוח">
+              <AssistantSelect options={options} name="assistantId" required />
+            </Field>
+            <RefreshVapiLink path={`/admin/t/${tenantId}`} />
+          </div>
           <Field label="המספר שהבוט עונה בו">
             <PhoneNumberSelect options={options} name="phoneNumberId" />
           </Field>

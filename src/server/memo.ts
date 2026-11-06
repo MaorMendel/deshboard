@@ -15,9 +15,10 @@ const store = new Map<string, Entry>();
 /** רשימות שמשתנות רק כשמוסיפים assistant או מספר ב-Vapi */
 export const VAPI_LISTS_TTL_MS = 5 * 60_000;
 
-export async function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+/** fresh: לדלג על הזיכרון ולטעון מחדש (כפתור "רענון"). התשובה החדשה נשמרת לבאים אחריה. */
+export async function cached<T>(key: string, ttlMs: number, load: () => Promise<T>, opts: { fresh?: boolean } = {}): Promise<T> {
   const hit = store.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
+  if (hit && !opts.fresh && Date.now() - hit.at < ttlMs) return hit.value as T;
   const value = await load();
   store.set(key, { at: Date.now(), value });
   return value;
