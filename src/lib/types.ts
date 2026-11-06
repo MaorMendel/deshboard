@@ -53,6 +53,8 @@ export interface BotPageData {
   plan: PlanInfo;
   /** לאן שיחת ניסיון תתקשר, מוסתר חלקית. null אם לא הוגדר מספר. */
   testPhoneMasked: string | null;
+  /** כמה תווים מותר בהנחיות. השרת בודק את אותה מגבלה. */
+  promptMax: number;
 }
 
 export interface UpdateResult {

@@ -2,7 +2,19 @@ import type { BotSettings, FieldErrors } from "./types";
 
 export const OPENING_MAX = 500;
 export const CLOSING_MAX = 500;
+/** המגבלה בפאנל הניהול */
 export const PROMPT_MAX = 20_000;
+
+/**
+ * המגבלה ללקוח. הנחיות ארוכות נשלחות למודל בכל תור בשיחה, ולכן מייקרות כל דקה.
+ * לקוח שכבר יש לו הנחיות ארוכות יותר (כי אדמין כתב אותן) יכול להמשיך לערוך אותן, אבל לא להאריך מעבר לזה.
+ */
+export const CUSTOMER_PROMPT_MAX = 8_000;
+
+/** כמה תווים מותר ללקוח, לפי אורך ההנחיות שיש לבוט שלו עכשיו */
+export function customerPromptLimit(currentLength: number): number {
+  return Math.max(CUSTOMER_PROMPT_MAX, currentLength);
+}
 
 // הערה: Vapi מפרש {{ ... }} כמשתנים (Liquid). לא חוסמים אותם, כי assistants קיימים
 // עשויים להשתמש במשתנים שהמערכת הראשית ממלאת.
@@ -10,7 +22,11 @@ export const PROMPT_MAX = 20_000;
 /**
  * אותה ולידציה רצה בדפדפן (לתגובה מיידית) ובשרת (כי לדפדפן אסור לסמוך).
  */
-export function validateSettings(settings: BotSettings, knownVoiceIds: string[]): FieldErrors {
+export function validateSettings(
+  settings: BotSettings,
+  knownVoiceIds: string[],
+  promptMax: number = CUSTOMER_PROMPT_MAX,
+): FieldErrors {
   const errors: FieldErrors = {};
   const opening = settings.openingMessage.trim();
   const closing = settings.closingMessage.trim();
@@ -32,8 +48,8 @@ export function validateSettings(settings: BotSettings, knownVoiceIds: string[])
     errors.closingMessage = `הסגירה ארוכה מדי. אפשר עד ${CLOSING_MAX} תווים.`;
   }
 
-  if ((settings.prompt ?? "").trim().length > PROMPT_MAX) {
-    errors.prompt = `ההנחיות ארוכות מדי. אפשר עד ${PROMPT_MAX} תווים.`;
+  if ((settings.prompt ?? "").trim().length > promptMax) {
+    errors.prompt = `ההנחיות ארוכות מדי. אפשר עד ${promptMax.toLocaleString("he-IL")} תווים.`;
   }
 
   return errors;

@@ -3,7 +3,7 @@
 import { MessagesSquare, PhoneIncoming, PhoneOff, UserRound, AudioLines } from "lucide-react";
 import { useState, type ComponentType, type ReactNode } from "react";
 import type { BotSettings, FieldErrors, FirstSpeaker, Voice } from "@/lib/types";
-import { CLOSING_MAX, OPENING_MAX, PROMPT_MAX } from "@/lib/validation";
+import { CLOSING_MAX, OPENING_MAX } from "@/lib/validation";
 import { cn } from "./cn";
 
 interface CallFlowProps {
@@ -11,10 +11,12 @@ interface CallFlowProps {
   voice: Voice;
   voices: Voice[];
   errors: FieldErrors;
+  /** אורך מקסימלי להנחיות, מהשרת */
+  promptMax: number;
   onChange: <K extends keyof BotSettings>(key: K, value: BotSettings[K]) => void;
 }
 
-export function CallFlow({ settings, voice, voices, errors, onChange }: CallFlowProps) {
+export function CallFlow({ settings, voice, voices, errors, promptMax, onChange }: CallFlowProps) {
   const callerFirst = settings.firstSpeaker === "caller";
 
   return (
@@ -57,7 +59,12 @@ export function CallFlow({ settings, voice, voices, errors, onChange }: CallFlow
       </Step>
 
       <Step icon={MessagesSquare} title="השיחה עצמה">
-        <PromptEditor value={settings.prompt ?? ""} error={errors.prompt} onChange={(v) => onChange("prompt", v)} />
+        <PromptEditor
+          value={settings.prompt ?? ""}
+          max={promptMax}
+          error={errors.prompt}
+          onChange={(v) => onChange("prompt", v)}
+        />
       </Step>
 
       <Step icon={PhoneOff} title="סגירה" last>
@@ -83,16 +90,18 @@ export function CallFlow({ settings, voice, voices, errors, onChange }: CallFlow
  */
 function PromptEditor({
   value,
+  max,
   error,
   onChange,
 }: {
   value: string;
+  max: number;
   error?: string;
   onChange: (v: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const length = value.trim().length;
-  const over = length > PROMPT_MAX;
+  const over = length > max;
 
   if (!open) {
     return (
@@ -142,7 +151,7 @@ function PromptEditor({
           )}
         </div>
         <span className={cn("shrink-0 tabular-nums", over ? "text-danger" : "text-ink-soft")}>
-          {length.toLocaleString("he-IL")} / {PROMPT_MAX.toLocaleString("he-IL")}
+          {length.toLocaleString("he-IL")} / {max.toLocaleString("he-IL")}
         </span>
       </div>
     </div>

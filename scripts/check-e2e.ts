@@ -34,6 +34,9 @@ async function main() {
     VAPI_TEST_PHONE_NUMBER_ID: "pn_test",
     APP_URL: "https://bots.example.com",
     INTERNAL_API_SECRET: "a-very-long-internal-secret-123",
+    // ElevenLabs מדומה על אותו שרת, ליצירת דוגמאות שמע
+    ELEVENLABS_BASE_URL: mock.url,
+    ELEVENLABS_API_KEY: KEY,
   });
 
   const client = new PGlite();
@@ -354,6 +357,157 @@ async function main() {
   assert.equal(pageAfterVapiEdit.settings.closingMessage, "סגירה שנכתבה ישירות ב-Vapi");
   assert.equal(pageAfterVapiEdit.settings.firstSpeaker, "bot");
   ok("שינוי שנעשה ישירות ב-Vapi (קול, פתיח, סגירה) מופיע אצל הלקוח ברענון");
+
+  // ---- מסך הקולות: הוספת קול של ElevenLabs עם מודל ו-ID משלו ----
+  const voiceAdmin = await import("../src/server/voice-admin");
+  const newVoice = {
+    provider: "11labs",
+    providerVoiceId: "el_noam_123",
+    name: "נועם",
+    gender: "male",
+    description: "חם ובטוח",
+    tier: "premium",
+    sortOrder: 5,
+    isActive: true,
+    model: "eleven_v3",
+    speed: 1.1,
+    stability: 0.5,
+  };
+  await expectError("validation", () => voiceAdmin.addVoice({ ...newVoice, model: "gpt-4o" }));
+  await expectError("validation", () => voiceAdmin.addVoice({ ...newVoice, speed: 2 }));
+  await expectError("validation", () => voiceAdmin.addVoice({ ...newVoice, providerVoiceId: "bad id with spaces" }));
+  await expectError("validation", () => voiceAdmin.addVoice({ ...newVoice, provider: "openai" }));
+  const noam = await voiceAdmin.addVoice(newVoice);
+  const noamVoice = { provider: "11labs", voiceId: "el_noam_123", model: "eleven_v3", speed: 1.1, stability: 0.5 };
+  assert.deepEqual(noam.providerConfig, noamVoice);
+  await expectError("validation", () => voiceAdmin.addVoice({ ...newVoice, name: "כפול" }));
+  ok("הוספת קול ElevenLabs: נשמר עם המודל והכיוונונים. מודל, מהירות, ID או ספק לא תקינים נדחים, וכפילות נחסמת");
+
+  // דוגמת שמע: נוצרת ב-ElevenLabs עם אותן הגדרות שיש לקול ב-Vapi
+  mock.requests.length = 0;
+  await voiceAdmin.generateSample(noam.id);
+  const ttsReq = mock.requests.find((r) => r.path.startsWith("/v1/text-to-speech/"))!;
+  assert.equal(ttsReq.path, "/v1/text-to-speech/el_noam_123?output_format=mp3_44100_128");
+  const ttsBody = ttsReq.body as { model_id: string; voice_settings: unknown; text: string };
+  assert.equal(ttsBody.model_id, "eleven_v3");
+  assert.deepEqual(ttsBody.voice_settings, { stability: 0.5, speed: 1.1 });
+  const noamSample = await voiceSample(noam.id);
+  assert.ok(noamSample && Buffer.from(noamSample.audio).toString().startsWith("ID3"), "הדוגמה נשמרה");
+  const missing = await voiceAdmin.addVoice({ ...newVoice, providerVoiceId: "missing_voice_1", name: "לא קיים" });
+  await expectError("validation", () => voiceAdmin.generateSample(missing.id));
+  // העלאת MP3: רק MP3 אמיתי, ועד 2MB
+  await expectError("validation", () => voiceAdmin.uploadSample(missing.id, Buffer.from("<html>not audio</html>")));
+  await expectError("validation", () => voiceAdmin.uploadSample(missing.id, Buffer.concat([Buffer.from("ID3"), Buffer.alloc(3 * 1024 * 1024)])));
+  await voiceAdmin.uploadSample(missing.id, Buffer.from([0xff, 0xfb, 0x90, 0x00, 1, 2, 3]));
+  const { GET: getSample } = await import("../src/app/api/voice-samples/[id]/route");
+  const sampleRes = await getSample(new Request("https://x"), { params: Promise.resolve({ id: missing.id }) });
+  assert.equal(sampleRes.status, 200);
+  assert.equal(sampleRes.headers.get("content-type"), "audio/mpeg");
+  const listed = (await voiceAdmin.listVoicesAdmin()).find((v) => v.id === noam.id)!;
+  assert.equal(listed.hasSample, true);
+  assert.equal(listed.model, "eleven_v3");
+  assert.ok(listed.sampleUrl?.startsWith(`/api/voice-samples/${noam.id}?v=`));
+  ok("דוגמאות: נוצרות ב-ElevenLabs עם המודל והכיוונונים של הקול, ID שגוי מחזיר שגיאה ברורה, העלאה מקבלת רק MP3 עד 2MB");
+
+  // ---- אבטחה: הלקוח שולח רק slug. ספק, מודל ו-ID שהוא מזייף בבקשה לא מגיעים ל-Vapi ----
+  const { PUT: putBot } = await import("../src/app/api/b/[key]/bot/route");
+  const { POST: postTestCall } = await import("../src/app/api/b/[key]/test-call/route");
+  const routeCtx = { params: Promise.resolve({ key: roniKey }) };
+  const jsonReq = (body: unknown) =>
+    new Request("https://x", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const forged = {
+    voiceId: noam.id,
+    firstSpeaker: "bot",
+    openingMessage: "שלום",
+    closingMessage: "",
+    // כל אלה מזויפים: מישהו העתיק את הבקשה מהדפדפן והוסיף שדות
+    provider: "11labs",
+    model: "eleven_v4_turbo",
+    providerVoiceId: "someone_expensive_voice",
+    voice: { provider: "11labs", voiceId: "someone_expensive_voice", model: "eleven_v4_turbo" },
+    assistantOverrides: { model: { provider: "openai", model: "gpt-4.5" } },
+  };
+  mock.requests.length = 0;
+  const forgedRes = await putBot(jsonReq(forged), routeCtx);
+  assert.equal(forgedRes.status, 200);
+  const forgedPatch = mock.requests.find((r) => r.method === "PATCH")!.body as Record<string, unknown>;
+  assert.deepEqual(forgedPatch.voice, noamVoice, "ל-Vapi נשלח הקול מהקטלוג, לא מה שבבקשה");
+  assert.equal(forgedPatch.model, undefined, "מודל מזויף לא נשלח");
+  const forgedVersion = await db.select().from(schema.botVersions).where(eq(schema.botVersions.tenantId, roni.tenant.id));
+  assert.ok(forgedVersion.every((v) => !("provider" in v.settings) && !("voice" in v.settings)), "שדות זרים לא נשמרים");
+
+  // קול שלא בקטלוג, קול כבוי, או קול שהוא אובייקט: נדחים
+  const inactive = await voiceAdmin.addVoice({ ...newVoice, providerVoiceId: "el_inactive_9", name: "כבוי", isActive: false });
+  for (const voiceId of ["11labs-someone_expensive_voice", "someone_expensive_voice", inactive.id, { provider: "11labs" }]) {
+    const res = await putBot(jsonReq({ ...forged, voiceId }), routeCtx);
+    assert.equal(res.status, 400, `voiceId ${JSON.stringify(voiceId)} היה צריך להידחות`);
+  }
+
+  // שיחת ניסיון: גם ה-override נבנה מהקטלוג בלבד
+  const openForTest = await db.select().from(schema.calls).where(and(eq(schema.calls.tenantId, roni.tenant.id), eq(schema.calls.type, "test")));
+  for (const t of openForTest) if (t.vapiCallId && t.status !== "ended") endCall(mock, t.vapiCallId, 5);
+  mock.requests.length = 0;
+  const tcRes = await postTestCall(jsonReq(forged), routeCtx);
+  assert.equal(tcRes.status, 200);
+  const forgedCall = mock.requests.find((r) => r.method === "POST" && r.path === "/call")!.body as {
+    assistantOverrides: Record<string, unknown>;
+  };
+  assert.deepEqual(forgedCall.assistantOverrides.voice, noamVoice);
+  assert.equal(forgedCall.assistantOverrides.model, undefined);
+  ok("בקשה מזויפת עם ספק, מודל ו-ID יקרים: השרת מתעלם מהם ושולח ל-Vapi את הקול מהקטלוג. קול לא קיים או כבוי נדחה");
+
+  // ---- הנחיות: הלקוח לא יכול להאריך אותן מעבר למגבלה, אבל יכול לשמור הנחיות ארוכות שאדמין כתב ----
+  const { CUSTOMER_PROMPT_MAX } = await import("../src/lib/validation");
+  const tooLong = "א".repeat(CUSTOMER_PROMPT_MAX + 1);
+  const longRes = await putBot(jsonReq({ ...forged, prompt: tooLong }), routeCtx);
+  assert.equal(longRes.status, 400);
+  assert.ok(((await longRes.json()) as { fieldErrors?: { prompt?: string } }).fieldErrors?.prompt);
+  const adminPrompt = "ב".repeat(CUSTOMER_PROMPT_MAX + 4000);
+  await admin.updateAssistantPrompt("1001", adminPrompt);
+  const longAccess = await findAccess(roniKey);
+  if (longAccess.state !== "ok") throw new Error("לא אמור לקרות");
+  assert.equal((await getBotPageData(longAccess)).promptMax, adminPrompt.length, "המגבלה בדף היא אורך ההנחיות הקיימות");
+  const keepRes = await putBot(jsonReq({ ...forged, prompt: adminPrompt, openingMessage: "פתיח אחר" }), routeCtx);
+  assert.equal(keepRes.status, 200, "מותר לשמור את ההנחיות הארוכות שכבר יש");
+  const growRes = await putBot(jsonReq({ ...forged, prompt: adminPrompt + "עוד" }), routeCtx);
+  assert.equal(growRes.status, 400, "אסור להאריך אותן");
+  await admin.updateAssistantPrompt("1001", "הנחיות קצרות");
+  ok(`הנחיות: לקוח מוגבל ל-${CUSTOMER_PROMPT_MAX} תווים. הנחיות ארוכות יותר שאדמין כתב נשמרות, אבל לא מתארכות`);
+
+  // ---- שינוי מודל בקטלוג, והחלה על ה-assistants שכבר משתמשים בקול ----
+  const { tuningChanged } = await voiceAdmin.updateVoice(noam.id, {
+    ...newVoice,
+    model: "eleven_flash_v2_5",
+    speed: null,
+    stability: 0.5,
+  });
+  assert.equal(tuningChanged, true);
+  assert.equal(mock.assistants.get("asst_roni")!.voice!.model, "eleven_v3", "עד שמחילים, הבוט החי לא משתנה");
+  mock.assistants.set("asst_other", { id: "asst_other", name: "אחר", voice: itaiVoice });
+  mock.requests.length = 0;
+  const applied = await voiceAdmin.applyVoiceToAssistants(noam.id);
+  assert.deepEqual(applied, { updated: ["מספרת רוני"], failed: [] });
+  assert.deepEqual(mock.assistants.get("asst_roni")!.voice, { provider: "11labs", voiceId: "el_noam_123", model: "eleven_flash_v2_5", stability: 0.5 });
+  assert.equal(mock.requests.filter((r) => r.method === "PATCH").length, 1, "רק ה-assistant שמשתמש בקול מתעדכן");
+  // מודל שהגיע מ-Vapi ולא ברשימה שלנו לא חוסם עריכה של השם
+  await db.update(schema.voices).set({ providerConfig: { ...noamVoice, model: "eleven_future_v9" } }).where(eq(schema.voices.id, noam.id));
+  await voiceAdmin.updateVoice(noam.id, { ...newVoice, model: "eleven_future_v9", name: "נועם 2" });
+  await expectError("validation", () => voiceAdmin.updateVoice(noam.id, { ...newVoice, model: "eleven_other_v9" }));
+  ok("שינוי מודל בקטלוג: חל על בחירות חדשות, ו'החלה' מעדכנת רק assistants שמדברים בקול הזה ב-Vapi");
+
+  // ---- כפילויות: assistant אחד ללקוח אחד ----
+  const dup = { name: "כפול", externalCustomerId: "9999", vapiAssistantId: "asst_roni" };
+  await expectError("validation", () => admin.createCustomer(dup));
+  await expectError("validation", () => admin.createCustomer({ ...dup, vapiAssistantId: "asst_demo" }));
+  await expectError("validation", () => admin.createCustomer({ ...dup, vapiAssistantId: "asst_other", externalCustomerId: "1001" }));
+  const { cached } = await import("../src/server/memo");
+  let loads = 0;
+  const load = async () => ++loads;
+  await cached("t", 60_000, load);
+  await cached("t", 60_000, load);
+  assert.equal(loads, 1, "בתוך הזמן: מהזיכרון");
+  assert.equal(await cached("t", 60_000, load, { fresh: true }), 2, "רענון טוען מחדש");
+  ok("assistant שכבר מחובר ללקוח, ה-assistant של הדמואים, או מזהה חיצוני תפוס נחסמים. 'רענון מ-Vapi' עוקף את הזיכרון");
 
   // 9. דמו: 5 דקות, maxDurationSeconds לפי היתרה
   const demo = await admin.createDemo({ name: "קליניקת שקד", verifiedPhone: "0521234567" });
