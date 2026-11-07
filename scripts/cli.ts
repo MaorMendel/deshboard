@@ -18,8 +18,9 @@ const HELP = `
                         [--tier premium] [--model sonic-3.6] [--speed 1.1] [--order 10] [--inactive]
       מוסיף קול של Cartesia לפי ה-ID שלו (או מעדכן אם כבר קיים), מפעיל אותו ומייצר לו דוגמת שמע
 
-  npm run voices:samples -- [--voice <id>] [--force] [--text "..."] [--model sonic-3.6]
-      מייצר ב-Cartesia דוגמת שמע קצרה לכל קול שאין לו, ושומר ב-public/voice-samples
+  npm run voices:samples -- [--voice <id>] [--force] [--text "..."] [--model <model>]
+      מייצר דוגמת שמע קצרה (Cartesia או ElevenLabs) לכל קול שאין לו, ושומר ב-DB.
+      אותו דבר אפשר לעשות מפאנל הניהול, במסך הקולות, וגם להוסיף קול של ElevenLabs ולהעלות MP3.
 
   npm run customer:add -- --name "מספרת רוני" --external-id 1001 --assistant <assistantId>
                           [--phone-number <phoneNumberId>] [--bot-phone "04-555-0182"] [--test-phone 0501234567]
@@ -101,7 +102,7 @@ async function main() {
       for (const v of r.voices) {
         console.log(`  ${v.isNew ? "חדש " : "קיים"}  ${v.id}  (${v.name})  בשימוש אצל: ${v.usedBy.join(", ")}`);
       }
-      console.log("\nקולות חדשים נכנסים כבויים. ב-Supabase -> Table Editor -> voices: לתת שם, מגדר ותיאור, ולסמן is_active.");
+      console.log("\nקולות חדשים נכנסים כבויים. בפאנל הניהול -> קולות: לתת שם, מגדר ותיאור, ולסמן 'להציג ללקוחות'.");
       break;
     }
     case "voices:add": {
@@ -141,7 +142,7 @@ async function main() {
       const label = { created: "נוצרה", skipped: "דולג ", failed: "נכשל " } as const;
       for (const v of r) console.log(`  ${label[v.status]}  ${v.id}  (${v.name})${v.reason ? `  ${v.reason}` : ""}`);
       const created = r.filter((v) => v.status === "created").length;
-      console.log(`\nנוצרו ${created} דוגמאות ב-public/voice-samples. בשרת אמיתי צריך להעלות את הקבצים יחד עם הקוד.`);
+      console.log(`\nנוצרו ${created} דוגמאות. הן נשמרו ב-DB והלקוחות שומעים אותן מיד.`);
       if (r.some((v) => v.status === "failed")) process.exitCode = 1;
       break;
     }

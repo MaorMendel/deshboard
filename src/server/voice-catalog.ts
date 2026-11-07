@@ -41,7 +41,7 @@ export async function selectableVoices(currentVoiceId?: string): Promise<VoiceRo
 // השם והתיאור שקול מיובא מקבל, עד שמישהו נותן לו שם ותיאור אמיתיים.
 // לפי אלה יודעים שמותר להחליף אותם, ולא לדרוס שם שנקבע בכוונה.
 export const IMPORTED_NAME_PREFIX = "קול מ-";
-const IMPORTED_DESCRIPTION = "יובא מ-Vapi. צריך לעדכן שם, מגדר ותיאור, ואז להפעיל.";
+export const IMPORTED_DESCRIPTION = "יובא מ-Vapi. צריך לעדכן שם, מגדר ותיאור, ואז להפעיל.";
 
 /** הקול בקטלוג שמתאים לקול שמוגדר ב-assistant. null אם הוא לא קיים אצלנו. */
 export async function findCatalogVoice(voice: VapiVoice | undefined): Promise<VoiceRow | null> {
@@ -53,7 +53,7 @@ export async function findCatalogVoice(voice: VapiVoice | undefined): Promise<Vo
   return row ?? null;
 }
 
-function slugFor(provider: string, providerVoiceId: string): string {
+export function slugFor(provider: string, providerVoiceId: string): string {
   return `${provider}-${providerVoiceId}`
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")

@@ -64,6 +64,33 @@ async function createWithFirstVersion(input: typeof tenants.$inferInsert, settin
   return { tenant, url: linkUrl(key) };
 }
 
+/**
+ * לקוח אחד לכל assistant: שני לקוחות על אותו assistant היו עורכים את אותו בוט, וכל אחד דורס את השני.
+ * גם ה-assistant של הדמואים תפוס, כי כל הדמואים רצים עליו. ומזהה במערכת הראשית שייך ללקוח אחד.
+ */
+async function assertFreeForCustomer(input: { vapiAssistantId: string; externalCustomerId: string }, exceptTenantId?: string) {
+  if (!input.vapiAssistantId) throw new ServiceError("validation", "צריך לבחור assistant.");
+  if (!input.externalCustomerId) throw new ServiceError("validation", "צריך מזהה במערכת הראשית.");
+  if (input.vapiAssistantId === config.vapi.demoAssistantId()) {
+    throw new ServiceError("validation", "זה ה-assistant המשותף של הדמואים. ללקוח צריך assistant משלו.");
+  }
+  const db = getDb();
+  const [byAssistant] = await db
+    .select({ id: tenants.id, name: tenants.name })
+    .from(tenants)
+    .where(eq(tenants.vapiAssistantId, input.vapiAssistantId));
+  if (byAssistant && byAssistant.id !== exceptTenantId) {
+    throw new ServiceError("validation", `ה-assistant הזה כבר מחובר ללקוח ${byAssistant.name}.`);
+  }
+  const [byExternal] = await db
+    .select({ id: tenants.id, name: tenants.name })
+    .from(tenants)
+    .where(eq(tenants.externalCustomerId, input.externalCustomerId));
+  if (byExternal && byExternal.id !== exceptTenantId) {
+    throw new ServiceError("validation", `המזהה ${input.externalCustomerId} כבר שייך ללקוח ${byExternal.name}.`);
+  }
+}
+
 export interface NewCustomerInput {
   name: string;
   externalCustomerId: string;
@@ -82,6 +109,7 @@ export interface NewCustomerInput {
  */
 export async function createCustomer(input: NewCustomerInput) {
   if (!isVapiConfigured()) throw new ServiceError("not_configured", "צריך להגדיר VAPI_PRIVATE_KEY כדי לחבר לקוח.");
+  await assertFreeForCustomer(input);
   const assistant = await vapi.getAssistant(input.vapiAssistantId);
 
   let voiceId: string;
@@ -189,6 +217,7 @@ export async function convertDemo(
   const tenant = await findTenant(ref);
   if (tenant.type !== "demo") throw new ServiceError("validation", `${tenant.name} כבר לקוח משלם.`);
   if (!isVapiConfigured()) throw new ServiceError("not_configured", "צריך להגדיר VAPI_PRIVATE_KEY כדי לחבר לקוח.");
+  await assertFreeForCustomer(input, tenant.id);
   const db = getDb();
 
   const [version] = tenant.currentVersionId

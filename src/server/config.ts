@@ -14,8 +14,15 @@ export const config = {
     testPhoneNumberId: () => process.env.VAPI_TEST_PHONE_NUMBER_ID ?? "",
   },
 
-  /** ל-npm run voices:samples בלבד. מייצר את דוגמאות השמע של הקולות. */
+  /** ליצירת דוגמאות שמע לקולות של Cartesia, ולהוספת קול Cartesia לפי ה-ID שלו. לא חובה. */
   cartesiaApiKey: () => process.env.CARTESIA_API_KEY ?? "",
+
+  elevenlabs: {
+    /** ליצירת דוגמאות שמע לקולות של ElevenLabs. לא חובה: בלעדיו אפשר להעלות MP3 ידנית. */
+    apiKey: () => process.env.ELEVENLABS_API_KEY ?? "",
+    /** לבדיקות בלבד (שרת מדומה) */
+    baseUrl: () => (process.env.ELEVENLABS_BASE_URL ?? "https://api.elevenlabs.io").replace(/\/$/, ""),
+  },
 
   /** הסיסמה של פאנל הניהול (/admin). לפחות 8 תווים. בלעדיה הפאנל כבוי. */
   adminPassword: () => process.env.ADMIN_PASSWORD ?? "",

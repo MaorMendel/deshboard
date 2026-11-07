@@ -56,7 +56,7 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
   }
 
   function passesLocalCheck(): boolean {
-    const found = validateSettings(draft, voiceIds);
+    const found = validateSettings(draft, voiceIds, initialData.promptMax);
     setErrors(found);
     if (hasErrors(found)) {
       setNotice({ tone: "error", content: "יש שדות שצריך לתקן לפני שממשיכים." });
@@ -164,6 +164,7 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
                 voice={selectedVoice}
                 voices={voices}
                 errors={errors}
+                promptMax={initialData.promptMax}
                 onChange={change}
               />
             </div>

@@ -2,7 +2,13 @@
 
 import { eq, sql } from "drizzle-orm";
 import type { BotPageData, BotSettings, PlanInfo, TestCallResult, UpdateResult } from "@/lib/types";
-import { hasErrors, normalizeSettings, validateSettings } from "@/lib/validation";
+import {
+  CUSTOMER_PROMPT_MAX,
+  customerPromptLimit,
+  hasErrors,
+  normalizeSettings,
+  validateSettings,
+} from "@/lib/validation";
 import { getDb } from "@/db";
 import { auditLog, botVersions, calls, tenants, type Tenant, type VoiceRow } from "@/db/schema";
 import { maskPhone, requireAccess, type Access, type RequestMeta } from "./access";
@@ -10,7 +16,14 @@ import { demoUsedSeconds, refreshOpenTestCalls, syncTenantCallsIfStale } from ".
 import { config } from "./config";
 import { isUniqueViolation, ServiceError } from "./errors";
 import { planUsage } from "./plan";
-import { buildVoice, firstMessageFields, modelWithPrompt, settingsFromAssistant, toAssistantFields } from "./vapi";
+import {
+  buildVoice,
+  firstMessageFields,
+  modelWithPrompt,
+  promptFromModel,
+  settingsFromAssistant,
+  toAssistantFields,
+} from "./vapi";
 import { isVapiConfigured, vapi, VapiError, type AssistantFields } from "./vapi-client";
 import { findCatalogVoice, selectableVoices, toPublicVoice } from "./voice-catalog";
 
@@ -120,16 +133,36 @@ export async function getBotPageData({ tenant }: Access): Promise<BotPageData> {
     lastUpdatedAt: version?.createdAt.toISOString() ?? null,
     plan,
     testPhoneMasked: tenant.verifiedPhone ? maskPhone(tenant.verifiedPhone) : null,
+    promptMax: customerPromptLimit((settings.prompt ?? "").trim().length),
   };
+}
+
+/**
+ * כמה תווים מותר בהנחיות שהלקוח שולח. נבדק רק כשהן ארוכות מהמגבלה הרגילה, כי רק אז צריך לדעת
+ * כמה ארוכות ההנחיות שכבר יש: אצל לקוח משלם, מה שב-Vapi עכשיו (אדמין יכול לקצר או להאריך שם);
+ * בדמו, מה שנשמר אצלנו.
+ */
+async function promptLimitFor(tenant: Tenant, saved: BotSettings | null): Promise<number> {
+  let current = (saved?.prompt ?? "").trim().length;
+  if (tenant.type === "customer" && tenant.vapiAssistantId && isVapiConfigured()) {
+    const assistant = await vapi.getAssistant(tenant.vapiAssistantId).catch(() => null);
+    if (assistant) current = promptFromModel(assistant.model).trim().length;
+  }
+  return customerPromptLimit(current);
 }
 
 async function validateForTenant(tenant: Tenant, input: BotSettings): Promise<{ settings: BotSettings; voice: VoiceRow }> {
   const version = await currentVersion(tenant);
   const allowed = await selectableVoices(version?.settings.voiceId);
   const settings = normalizeSettings(input);
+  const promptMax =
+    (settings.prompt ?? "").length > CUSTOMER_PROMPT_MAX
+      ? await promptLimitFor(tenant, version?.settings ?? null)
+      : CUSTOMER_PROMPT_MAX;
   const errors = validateSettings(
     settings,
     allowed.map((v) => v.id),
+    promptMax,
   );
   if (hasErrors(errors)) {
     throw new ServiceError("validation", "יש שדות שצריך לתקן לפני שממשיכים.", errors);

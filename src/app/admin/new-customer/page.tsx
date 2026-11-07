@@ -3,19 +3,20 @@ import { Suspense } from "react";
 import { isAdmin } from "@/server/admin-auth";
 import { createCustomerAction } from "../actions";
 import { ActionForm, Field, inputCls } from "../forms";
-import { AssistantSelect, PhoneNumberSelect, vapiOptions } from "../vapi-options";
+import { AssistantSelect, PhoneNumberSelect, RefreshVapiLink, vapiOptions } from "../vapi-options";
 
-export default function Page() {
+export default function Page({ searchParams }: PageProps<"/admin/new-customer">) {
   return (
     <Suspense fallback={<p className="text-ink-soft">טוען...</p>}>
-      <NewCustomer />
+      <NewCustomer searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function NewCustomer() {
+async function NewCustomer({ searchParams }: { searchParams: PageProps<"/admin/new-customer">["searchParams"] }) {
   if (!(await isAdmin())) redirect("/admin/login");
-  const options = await vapiOptions();
+  const { fresh } = await searchParams;
+  const options = await vapiOptions({ fresh: fresh === "1" });
 
   return (
     <main className="mx-auto w-full max-w-xl">
@@ -34,9 +35,12 @@ async function NewCustomer() {
           <Field label="מזהה במערכת הראשית" hint="לפיו המערכת שלך מבקשת את הדקות (external id)">
             <input name="externalId" required className={inputCls} dir="ltr" placeholder="1001" />
           </Field>
-          <Field label="ה-assistant של הלקוח ב-Vapi">
-            <AssistantSelect options={options} name="assistantId" required />
-          </Field>
+          <div>
+            <Field label="ה-assistant של הלקוח ב-Vapi" hint="assistant שכבר מחובר ללקוח מופיע אפור">
+              <AssistantSelect options={options} name="assistantId" required />
+            </Field>
+            <RefreshVapiLink path="/admin/new-customer" />
+          </div>
           <Field label="המספר שהבוט עונה בו" hint="שיחות ניסיון יוצאות ממנו">
             <PhoneNumberSelect options={options} name="phoneNumberId" />
           </Field>

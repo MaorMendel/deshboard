@@ -16,7 +16,11 @@ import {
   updateAssistantPrompt,
   updatePlan,
 } from "@/server/admin-service";
+import { config } from "@/server/config";
+import { isElevenLabsConfigured } from "@/server/elevenlabs-client";
 import { ServiceError } from "@/server/errors";
+import { addVoice, applyVoiceToAssistants, generateSample, updateVoice, uploadSample } from "@/server/voice-admin";
+import { importVoicesFromVapi } from "@/server/voice-catalog";
 
 export type ActionResult = { error?: string; ok?: string; url?: string } | null;
 
@@ -176,6 +180,137 @@ export async function savePromptAction(tenantId: string, _prev: ActionResult, fo
     await updateAssistantPrompt(tenantId, String(form.get("prompt") ?? ""));
     refresh(tenantId);
     return { ok: "הפרומפט עודכן ב-Vapi. הוא פעיל מהשיחה הבאה." };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+// ---------- קולות ----------
+
+/** מספר משדה כיוונון: undefined כשהשדה לא בטופס, null כשהוא ריק (= להסיר את ההגדרה) */
+function tuningNumber(form: FormData, name: string): number | null | undefined {
+  if (!form.has(name)) return undefined;
+  const value = text(form, name);
+  if (!value) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new ServiceError("validation", `הערך בשדה ${name} לא מספר.`);
+  return n;
+}
+
+function voiceDetails(form: FormData) {
+  return {
+    name: text(form, "name"),
+    gender: text(form, "gender"),
+    description: text(form, "description"),
+    tier: text(form, "tier") || "standard",
+    sortOrder: intField(form, "sortOrder") ?? 0,
+    isActive: form.get("isActive") === "on",
+    model: form.has("model") ? text(form, "model") : undefined,
+    speed: tuningNumber(form, "speed"),
+    stability: tuningNumber(form, "stability"),
+  };
+}
+
+function canGenerateFor(provider: string): boolean {
+  if (provider === "11labs") return isElevenLabsConfigured();
+  if (provider === "cartesia") return config.cartesiaApiKey().length > 0;
+  return false;
+}
+
+const KEY_NAME: Record<string, string> = { "11labs": "ELEVENLABS_API_KEY", cartesia: "CARTESIA_API_KEY" };
+
+export async function importVoicesAction(): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const r = await importVoicesFromVapi();
+    const added = r.voices.filter((v) => v.isNew).length;
+    revalidatePath("/admin/voices");
+    return {
+      ok: added
+        ? `נסרקו ${r.assistantsScanned} assistants ונוספו ${added} קולות חדשים. הם כבויים עד שנותנים להם שם ומפעילים.`
+        : `נסרקו ${r.assistantsScanned} assistants. אין קולות חדשים.`,
+    };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function addVoiceAction(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const provider = text(form, "provider");
+    const voice = await addVoice({ ...voiceDetails(form), provider, providerVoiceId: text(form, "providerVoiceId") });
+    revalidatePath("/admin/voices");
+    if (!canGenerateFor(provider)) {
+      return {
+        ok: `הקול ${voice.name} נוסף. אין ${KEY_NAME[provider] ?? "מפתח"} בשרת, אז אין דוגמה אוטומטית. אפשר להעלות MP3 ברשימה.`,
+      };
+    }
+    try {
+      await generateSample(voice.id);
+      return { ok: `הקול ${voice.name} נוסף ונוצרה לו דוגמת שמע. אפשר להאזין לה ברשימה.` };
+    } catch (err) {
+      const reason = err instanceof ServiceError ? err.message : "שגיאה לא צפויה";
+      return { ok: `הקול ${voice.name} נוסף, אבל ${reason} כדאי לבדוק את ה-Voice ID ואת המודל.` };
+    }
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function updateVoiceAction(voiceId: string, _prev: ActionResult, form: FormData): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const { voice, tuningChanged } = await updateVoice(voiceId, voiceDetails(form));
+    revalidatePath("/admin/voices");
+    return {
+      ok: tuningChanged
+        ? `נשמר. ההגדרות החדשות של ${voice.name} חלות על כל בחירה חדשה של הקול ועל שיחות ניסיון. כדאי ליצור דוגמה חדשה, ואם יש לקוחות שכבר משתמשים בקול, להחיל עליהם.`
+        : "נשמר.",
+    };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function generateSampleAction(voiceId: string): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    await generateSample(voiceId);
+    revalidatePath("/admin/voices");
+    return { ok: "נוצרה דוגמה חדשה." };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function uploadSampleAction(voiceId: string, _prev: ActionResult, form: FormData): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const file = form.get("file");
+    if (!(file instanceof File) || file.size === 0) return { error: "צריך לבחור קובץ MP3." };
+    await uploadSample(voiceId, Buffer.from(await file.arrayBuffer()));
+    revalidatePath("/admin/voices");
+    return { ok: "הדוגמה הועלתה. הלקוחות ישמעו אותה מעכשיו." };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function applyVoiceAction(voiceId: string): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const { updated, failed } = await applyVoiceToAssistants(voiceId);
+    if (failed.length) {
+      return {
+        error: `עודכנו ${updated.length}. נכשלו: ${failed.join(", ")}. אפשר לנסות שוב, זה בטוח.`,
+      };
+    }
+    return {
+      ok: updated.length
+        ? `עודכנו ${updated.length} assistants: ${updated.join(", ")}.`
+        : "אף assistant לא משתמש כרגע בקול הזה ב-Vapi. אין מה לעדכן.",
+    };
   } catch (err) {
     return failure(err);
   }

@@ -1,0 +1,30 @@
+# תלויות: כל מחשב מתקין לעצמו עם npm install
+/node_modules
+
+# תוצרי build
+/.next/
+/out/
+/build
+*.tsbuildinfo
+next-env.d.ts
+
+# סודות: לעולם לא נכנסים ל-git
+.env
+.env*.local
+.env.*
+!.env.example
+
+# קבצי מערכת ועורכים
+.DS_Store
+*.pem
+.vscode/
+.idea/
+
+# לוגים
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Vercel
+.vercel
