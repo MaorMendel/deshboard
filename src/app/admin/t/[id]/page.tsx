@@ -291,7 +291,14 @@ function periodText(detail: TenantDetail): string {
 }
 
 function CostSection({ detail }: { detail: TenantDetail }) {
-  const { cost, previousCostUsd } = detail;
+  const { cost, previousCostUsd, costError } = detail;
+  if (!cost) {
+    return (
+      <Section title="עלות">
+        <p className="rounded-lg bg-pending-soft px-3 py-2 text-sm text-pending">{costError}</p>
+      </Section>
+    );
+  }
   const minutes = cost.seconds / 60;
   const parts = COST_PARTS.map((p) => ({ ...p, value: cost[p.key] })).filter((p) => p.value >= 0.005);
 

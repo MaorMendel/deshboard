@@ -375,10 +375,37 @@ export interface TenantDetail extends TenantOverview {
     Call,
     "id" | "type" | "status" | "startedAt" | "createdAt" | "durationSeconds" | "endedReason" | "customerNumber" | "costUsd"
   >[];
-  /** העלות בתקופה הנוכחית, מפורטת לפי רכיב */
-  cost: CostSummary;
+  /** העלות בתקופה הנוכחית, מפורטת לפי רכיב. null כשאי אפשר לחשב (ראו costError). */
+  cost: CostSummary | null;
   /** סך העלות בתקופה הקודמת, להשוואה. null בדמו. */
   previousCostUsd: number | null;
+  /** למה אין עלות, כשאין. שאר העמוד עובד כרגיל. */
+  costError: string | null;
+}
+
+/** קוד השגיאה של Postgres לעמודה שלא קיימת. drizzle עוטף את השגיאה, ולכן בודקים גם את cause. */
+function isMissingColumn(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === "42703" || e?.cause?.code === "42703";
+}
+
+export const MISSING_MIGRATION_MESSAGE =
+  "כדי להציג עלות צריך לעדכן את מבנה ה-DB: להריץ npm run db:migrate מתיקיית הפרויקט. עד שזה קורה, גם הסנכרון של שיחות ודקות מ-Vapi לא נשמר.";
+
+/** העלות בתקופה ובתקופה הקודמת. אם ה-DB עוד לא עודכן (מיגרציה 0005), מחזיר הודעה במקום להפיל את העמוד. */
+async function costsFor(tenantId: string, period: CostPeriod, previous: { from: Date; to: Date } | null) {
+  const db = getDb();
+  try {
+    const [cost, previousCost] = await Promise.all([
+      getCostSummary(db, tenantId, period.from, period.to),
+      previous ? getCostSummary(db, tenantId, previous.from, previous.to) : Promise.resolve(null),
+    ]);
+    return { cost, previousCostUsd: previousCost?.totalUsd ?? null, costError: null };
+  } catch (err) {
+    if (!isMissingColumn(err)) throw err;
+    console.error("calls.cost_breakdown חסרה. צריך להריץ npm run db:migrate");
+    return { cost: null, previousCostUsd: null, costError: MISSING_MIGRATION_MESSAGE };
+  }
 }
 
 /** כל מה שעמוד הלקוח בפאנל הניהול מציג */
@@ -398,7 +425,7 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
   }
 
   const db = getDb();
-  const [links, versions, recentCalls, usage, demoSeconds, cost, previousCost] = await Promise.all([
+  const [links, versions, recentCalls, usage, demoSeconds, costs] = await Promise.all([
     db
       .select({
         id: accessLinks.id,
@@ -432,8 +459,7 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
       .limit(10),
     planUsage(tenant),
     tenant.type === "demo" ? demoUsedSeconds(tenant.id) : Promise.resolve(null),
-    getCostSummary(db, tenant.id, period.from, period.to),
-    previous ? getCostSummary(db, tenant.id, previous.from, previous.to) : Promise.resolve(null),
+    costsFor(tenant.id, period, previous),
   ]);
 
   return {
@@ -447,10 +473,9 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
     usage,
     demoUsedSeconds: demoSeconds,
     activeLinks: links.filter((l) => !l.revokedAt).length,
-    costUsd: cost.totalUsd,
+    costUsd: costs.cost?.totalUsd ?? 0,
     costPeriod: period,
-    cost,
-    previousCostUsd: previousCost?.totalUsd ?? null,
+    ...costs,
   };
 }
 
