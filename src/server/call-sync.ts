@@ -3,7 +3,7 @@
 
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { calls, tenants, type Call } from "@/db/schema";
+import { calls, syncState, tenants, type Call } from "@/db/schema";
 import { config } from "./config";
 import { isVapiConfigured, vapi, type VapiCall } from "./vapi-client";
 
@@ -110,107 +110,198 @@ async function* callsUpdatedSince(assistantId: string, since: Date): AsyncGenera
   }
 }
 
-/** מושך את כל השיחות של ה-assistant של לקוח שהשתנו מאז התאריך, ומכניס או מעדכן אותן */
-export async function syncTenantCalls(tenant: { id: string; vapiAssistantId: string | null }, since: Date) {
-  if (!tenant.vapiAssistantId) return { fetched: 0 };
-  const db = getDb();
-  let fetched = 0;
+// ---------- שמירה במנות ----------
 
-  for await (const batch of callsUpdatedSince(tenant.vapiAssistantId, since)) {
-    for (const call of batch) {
-      const fields = fieldsFromVapi(call);
-      await db
-        .insert(calls)
-        .values({
-          tenantId: tenant.id,
-          vapiCallId: call.id,
-          type: mapType(call),
-          vapiAssistantId: call.assistantId ?? tenant.vapiAssistantId,
-          customerNumber: call.customer?.number ?? null,
-          createdAt: new Date(call.createdAt),
-          ...fields,
-        })
-        .onConflictDoUpdate({ target: calls.vapiCallId, set: fields });
-    }
-    fetched += batch.length;
+/** העמודות שמתעדכנות כששיחה כבר קיימת (כמו fieldsFromVapi). סוג השיחה לא ביניהן. */
+const UPDATED_ON_CONFLICT = [
+  "status",
+  "startedAt",
+  "endedAt",
+  "durationSeconds",
+  "costUsd",
+  "costBreakdown",
+  "endedReason",
+] as const satisfies readonly (keyof ReturnType<typeof fieldsFromVapi>)[];
+
+const setFromExcluded = Object.fromEntries(
+  UPDATED_ON_CONFLICT.map((key) => [key, sql.raw(`excluded."${calls[key].name}"`)]),
+);
+
+/**
+ * מכניס או מעדכן הרבה שיחות בשאילתה אחת (לכל 500), במקום שאילתה לכל שיחה.
+ * מול Supabase כל שאילתה היא נסיעה הלוך-חזור לפרנקפורט, ו-300 כאלה ברצף לקחו שניות.
+ */
+async function upsertCalls(rows: (typeof calls.$inferInsert)[]) {
+  // אותה שיחה פעמיים באותה שאילתה היא שגיאה ב-Postgres, ולכן קודם מאחדים לפי המזהה
+  const unique = [...new Map(rows.map((r) => [r.vapiCallId, r])).values()];
+  const db = getDb();
+  for (let i = 0; i < unique.length; i += 500) {
+    await db
+      .insert(calls)
+      .values(unique.slice(i, i + 500))
+      .onConflictDoUpdate({ target: calls.vapiCallId, set: setFromExcluded });
   }
+}
+
+// ---------- סנכרון מצטבר ----------
+
+/** חפיפה בין סנכרון לסנכרון, למקרה שהשעונים אצלנו וב-Vapi לא מדויקים */
+const OVERLAP_MS = 10 * 60 * 1000;
+/** בטעינת דף: לא לפנות ל-Vapi שוב אם סונכרן לפני פחות מזה */
+export const SYNC_MIN_INTERVAL_MS = 60_000;
+
+export const tenantSyncKey = (tenantId: string) => `tenant:${tenantId}`;
+export const DEMO_SYNC_KEY = "demo-assistant";
+
+/** קוד השגיאה של Postgres לטבלה שלא קיימת: מיגרציה 0006 עוד לא הורצה */
+function isMissingTable(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === "42P01" || e?.cause?.code === "42P01";
+}
+
+/** null כשעוד לא סונכרן, "missing" כשהטבלה עוד לא קיימת */
+async function readSyncState(key: string) {
+  try {
+    const [row] = await getDb().select().from(syncState).where(eq(syncState.key, key));
+    return row ?? null;
+  } catch (err) {
+    if (isMissingTable(err)) return "missing" as const;
+    throw err;
+  }
+}
+
+/** מתי הסתיים בהצלחה הסנכרון האחרון (tenantSyncKey או DEMO_SYNC_KEY). null אם עוד לא, או אם אין טבלה. */
+export async function lastSyncedAt(key: string): Promise<Date | null> {
+  const state = await readSyncState(key);
+  return state && state !== "missing" ? state.syncedAt : null;
+}
+
+export interface SyncResult {
+  fetched: number;
+  /** לא פנינו ל-Vapi, כי סונכרן ממש עכשיו */
+  skipped?: true;
+}
+
+/**
+ * הלב של הסנכרון: מחליט ממתי למשוך, מושך, שומר, ומעדכן את המצב.
+ * - אם השיחות אצלנו כבר שלמות מ-since: מושכים רק מה שהשתנה מאז הסנכרון הקודם (פחות חפיפה).
+ * - אחרת (פעם ראשונה, או שמבקשים תקופה מוקדמת יותר): מושכים הכול מ-since.
+ * המצב מתעדכן רק אחרי שהכול נשמר, כך שסנכרון שנכשל באמצע פשוט חוזר על עצמו בפעם הבאה.
+ */
+async function syncIncrementally(
+  key: string,
+  since: Date,
+  minIntervalMs: number,
+  fetchAndSave: (from: Date) => Promise<number>,
+): Promise<SyncResult> {
+  const state = await readSyncState(key);
+  const startedAt = new Date();
+
+  // בלי הטבלה: כמו פעם, הכול מ-since בכל פעם
+  if (state === "missing") return { fetched: await fetchAndSave(since) };
+
+  const covered = state != null && state.coveredFrom <= since;
+  if (covered && startedAt.getTime() - state.syncedAt.getTime() < minIntervalMs) return { fetched: 0, skipped: true };
+
+  const from = covered ? new Date(state.syncedAt.getTime() - OVERLAP_MS) : since;
+  const fetched = await fetchAndSave(from);
+
+  const coveredFrom = covered ? state.coveredFrom : since;
+  await getDb()
+    .insert(syncState)
+    .values({ key, coveredFrom, syncedAt: startedAt })
+    .onConflictDoUpdate({
+      target: syncState.key,
+      // שני סנכרונים במקביל: לא חוזרים אחורה בזמן
+      set: {
+        coveredFrom: sql`least(${syncState.coveredFrom}, excluded.covered_from)`,
+        syncedAt: sql`greatest(${syncState.syncedAt}, excluded.synced_at)`,
+      },
+    });
   return { fetched };
 }
 
 /**
- * שיחות הניסיון של הדמואים רצות על ה-assistant המשותף, ולכן syncTenantCalls לא רואה אותן.
- * עד עכשיו הן התעדכנו רק כל עוד היו פתוחות, אבל העלות הסופית (כולל הסיכום שאחרי השיחה) מגיעה
- * מ-Vapi קצת אחרי הסיום. כאן מעדכנים את השורות שכבר קיימות אצלנו, לפי המזהה של השיחה.
- * שיחה של ה-assistant המשותף שלא נוצרה מהדשבורד לא נכנסת, כי אין לה לקוח.
+ * מוודא שכל השיחות של ה-assistant של הלקוח שהשתנו מאז since נמצאות אצלנו ומעודכנות.
+ * בפועל מושך מ-Vapi רק מה שהשתנה מאז הסנכרון הקודם.
+ * minIntervalMs: אם סונכרן לפני פחות מזה, לא פונים ל-Vapi בכלל (ברירת מחדל: תמיד פונים).
  */
-export async function syncDemoCalls(since: Date): Promise<{ fetched: number; updated: number }> {
-  const demoAssistantId = config.vapi.demoAssistantId();
-  if (!demoAssistantId) return { fetched: 0, updated: 0 };
-  const db = getDb();
-  let fetched = 0;
-  let updated = 0;
+export async function syncTenantCalls(
+  tenant: { id: string; vapiAssistantId: string | null },
+  since: Date,
+  { minIntervalMs = 0 }: { minIntervalMs?: number } = {},
+): Promise<SyncResult> {
+  const assistantId = tenant.vapiAssistantId;
+  if (!assistantId) return { fetched: 0 };
 
-  for await (const batch of callsUpdatedSince(demoAssistantId, since)) {
-    fetched += batch.length;
-    if (!batch.length) continue;
-    const known = await db
-      .select({ vapiCallId: calls.vapiCallId })
-      .from(calls)
-      .where(inArray(calls.vapiCallId, batch.map((c) => c.id)));
-    const knownIds = new Set(known.map((k) => k.vapiCallId));
-    for (const call of batch) {
-      if (!knownIds.has(call.id)) continue;
-      await db.update(calls).set(fieldsFromVapi(call)).where(eq(calls.vapiCallId, call.id));
-      updated++;
+  return syncIncrementally(tenantSyncKey(tenant.id), since, minIntervalMs, async (from) => {
+    let fetched = 0;
+    for await (const batch of callsUpdatedSince(assistantId, from)) {
+      await upsertCalls(
+        batch.map((call) => ({
+          tenantId: tenant.id,
+          vapiCallId: call.id,
+          type: mapType(call),
+          vapiAssistantId: call.assistantId ?? assistantId,
+          customerNumber: call.customer?.number ?? null,
+          createdAt: new Date(call.createdAt),
+          ...fieldsFromVapi(call),
+        })),
+      );
+      fetched += batch.length;
     }
-  }
-  return { fetched, updated };
+    return fetched;
+  });
 }
 
-/**
- * מתי סונכרן לאחרונה כל לקוח. מונע משיכה מ-Vapi בכל טעינת דף:
- * בלי זה, רענון או מעבר בין דפים מחכים לכמה סבבים מול Vapi בכל פעם.
- * נשמר בזיכרון התהליך, ולכן זו רק הקטנת עומס, לא נכונות: הפקודה ו-cron תמיד מסנכרנים.
- */
-const lastSyncAt = new Map<string, number>();
-export const SYNC_MIN_INTERVAL_MS = 60_000;
-
-const DEMO_SYNC_KEY = "demo-assistant";
-
-/** כמו syncDemoCalls, אבל מדלג אם סונכרן לפני פחות מדקה */
-export async function syncDemoCallsIfStale(since: Date, minIntervalMs = SYNC_MIN_INTERVAL_MS) {
-  if (Date.now() - (lastSyncAt.get(DEMO_SYNC_KEY) ?? 0) < minIntervalMs) return { fetched: 0, updated: 0, skipped: true };
-  lastSyncAt.set(DEMO_SYNC_KEY, Date.now());
-  try {
-    return await syncDemoCalls(since);
-  } catch (err) {
-    lastSyncAt.delete(DEMO_SYNC_KEY);
-    throw err;
-  }
-}
-
-/** כמו syncTenantCalls, אבל מדלג אם סונכרן לפני פחות מדקה */
-export async function syncTenantCallsIfStale(
+/** כמו syncTenantCalls, אבל מדלג אם סונכרן לפני פחות מדקה. לטעינת דפים. */
+export function syncTenantCallsIfStale(
   tenant: { id: string; vapiAssistantId: string | null },
   since: Date,
   minIntervalMs = SYNC_MIN_INTERVAL_MS,
-): Promise<{ fetched: number; skipped?: true }> {
-  if (Date.now() - (lastSyncAt.get(tenant.id) ?? 0) < minIntervalMs) return { fetched: 0, skipped: true };
-  // מסמנים לפני הסנכרון, כדי ששתי בקשות במקביל לא ימשכו את אותו דבר פעמיים
-  lastSyncAt.set(tenant.id, Date.now());
-  try {
-    return await syncTenantCalls(tenant, since);
-  } catch (err) {
-    lastSyncAt.delete(tenant.id);
-    throw err;
-  }
+): Promise<SyncResult> {
+  return syncTenantCalls(tenant, since, { minIntervalMs });
+}
+
+/**
+ * שיחות הניסיון של הדמואים רצות על ה-assistant המשותף, ולכן syncTenantCalls לא רואה אותן.
+ * העלות הסופית של שיחה (כולל הסיכום שאחריה) מגיעה מ-Vapi קצת אחרי הסיום, ולכן מעדכנים אותן כאן.
+ * רק שורות שכבר קיימות אצלנו: שיחה של ה-assistant המשותף שלא נוצרה מהדשבורד לא נכנסת, כי אין לה לקוח.
+ */
+export async function syncDemoCalls(
+  since: Date,
+  { minIntervalMs = 0 }: { minIntervalMs?: number } = {},
+): Promise<SyncResult> {
+  const demoAssistantId = config.vapi.demoAssistantId();
+  if (!demoAssistantId) return { fetched: 0 };
+  const db = getDb();
+
+  return syncIncrementally(DEMO_SYNC_KEY, since, minIntervalMs, async (from) => {
+    let fetched = 0;
+    for await (const batch of callsUpdatedSince(demoAssistantId, from)) {
+      fetched += batch.length;
+      if (!batch.length) continue;
+      const known = await db
+        .select({ vapiCallId: calls.vapiCallId, tenantId: calls.tenantId, type: calls.type })
+        .from(calls)
+        .where(inArray(calls.vapiCallId, batch.map((c) => c.id)));
+      const byId = new Map(known.map((k) => [k.vapiCallId, k]));
+      await upsertCalls(
+        batch.flatMap((call) => {
+          const row = byId.get(call.id);
+          return row ? [{ tenantId: row.tenantId, vapiCallId: call.id, type: row.type, ...fieldsFromVapi(call) }] : [];
+        }),
+      );
+    }
+    return fetched;
+  });
 }
 
 /** סנכרון מלא: שיחות ניסיון פתוחות, שיחות הדמואים, ואז כל השיחות של כל הלקוחות המחוברים */
 export async function syncAllCalls(since: Date) {
   const db = getDb();
   const refreshedTests = await refreshOpenTestCalls();
-  const demos = await syncDemoCalls(since).catch((err: Error) => ({ fetched: 0, updated: 0, error: err.message }));
+  const demos = await syncDemoCalls(since).catch((err: Error) => ({ fetched: 0, error: err.message }));
   const connected = await db
     .select({ id: tenants.id, name: tenants.name, vapiAssistantId: tenants.vapiAssistantId })
     .from(tenants)

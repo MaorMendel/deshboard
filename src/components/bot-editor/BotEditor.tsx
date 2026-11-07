@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiRequestError, createBotApi } from "@/lib/api";
-import type { BotPageData, BotSettings, FieldErrors } from "@/lib/types";
+import type { BotPageData, BotSettings, CustomerVersion, FieldErrors } from "@/lib/types";
 import { hasErrors, sameSettings, validateSettings } from "@/lib/validation";
 import { ActionBar, formatDuration, type Notice } from "./ActionBar";
 import { CallFlow } from "./CallFlow";
 import { ComingSoon } from "./ComingSoon";
 import { UsageCard } from "./UsageCard";
+import { VersionsPanel } from "./VersionsPanel";
 import { VoicePicker } from "./VoicePicker";
 
 type Busy = null | "update" | "test";
@@ -24,6 +25,9 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
   const [errors, setErrors] = useState<FieldErrors>({});
   const [busy, setBusy] = useState<Busy>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // גרסה קודמת שהוחזרה למסך. אם הלקוח מעדכן אותה כמו שהיא, ההיסטוריה תגיד "חזרה לגרסה N".
+  const [restored, setRestored] = useState<{ version: number; settings: BotSettings } | null>(null);
+  const [versionsKey, setVersionsKey] = useState(0);
 
   const dirty = !sameSettings(published, draft);
   const voiceIds = useMemo(() => voices.map((v) => v.id), [voices]);
@@ -83,15 +87,18 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
     if (!passesLocalCheck()) return;
 
     const sent = draft;
+    const restoredFrom = restored && sameSettings(restored.settings, sent) ? restored.version : undefined;
     setBusy("update");
     setNotice(null);
     try {
       // published = ההגדרות שהשרת מסר לנו. לפיהן הוא כותב ל-Vapi רק את מה שהלקוח שינה.
-      const res = await botApi.update(sent, published);
+      const res = await botApi.update(sent, published, restoredFrom);
       setPublished(res.settings);
       // אם הלקוח המשיך להקליד בזמן העדכון, לא דורסים את מה שהוא כתב
       setDraft((current) => (sameSettings(current, sent) ? res.settings : current));
       setLastUpdatedAt(res.lastUpdatedAt);
+      setRestored(null);
+      setVersionsKey((k) => k + 1);
       setNotice({
         tone: "success",
         content:
@@ -104,6 +111,37 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
     } finally {
       setBusy(null);
     }
+  }
+
+  /**
+   * מחזיר גרסה קודמת למסך. הבוט עצמו לא משתנה עד "עדכן את הבוט".
+   * גרסה בלי הנחיות לא מוחקת את ההנחיות שעל המסך, וקול שכבר לא זמין מוחלף בקול שנבחר עכשיו.
+   */
+  function restoreVersion(v: CustomerVersion) {
+    const voiceAvailable = voiceIds.includes(v.settings.voiceId);
+    const next: BotSettings = {
+      ...v.settings,
+      voiceId: voiceAvailable ? v.settings.voiceId : draft.voiceId,
+      prompt: v.settings.prompt?.trim() ? v.settings.prompt : draft.prompt,
+    };
+    setDraft(next);
+    setErrors({});
+    setRestored({ version: v.version, settings: next });
+    setNotice({
+      tone: "info",
+      content:
+        `ההגדרות של גרסה ${v.version} חזרו למסך. הבוט עוד לא השתנה: אפשר לנסות אותו, ואז ללחוץ "עדכן את הבוט".` +
+        (voiceAvailable ? "" : ` הקול ${v.voiceName} כבר לא זמין, אז נשאר הקול שבחרת.`),
+    });
+    document.getElementById("flow-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /** מבטל את מה שעל המסך וחוזר למה שהבוט עובד איתו */
+  function discardChanges() {
+    setDraft(published);
+    setErrors({});
+    setRestored(null);
+    setNotice(null);
   }
 
   async function handleTest() {
@@ -186,15 +224,27 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
           </section>
         </div>
 
+        <section aria-labelledby="versions-title" className="mt-16">
+          <h2 id="versions-title" className="text-xl font-semibold">
+            גרסאות קודמות
+          </h2>
+          <p className="mt-1 text-ink-soft">כל עדכון של הבוט נשמר. אפשר להחזיר גרסה קודמת למסך, לנסות אותה ולעדכן.</p>
+          <div className="mt-4">
+            <VersionsPanel
+              api={botApi}
+              reloadKey={versionsKey}
+              dirty={dirty}
+              onRestore={restoreVersion}
+              onDiscard={discardChanges}
+            />
+          </div>
+        </section>
+
         <section aria-labelledby="soon-title" className="mt-16">
           <h2 id="soon-title" className="text-xl font-semibold">
             בקרוב
           </h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <ComingSoon
-              title="גרסאות קודמות"
-              description="היסטוריה של כל עדכון, וחזרה לגרסה קודמת בלחיצה אחת."
-            />
             <ComingSoon
               title="השיחות שלכם"
               description="מי התקשר, מה נאמר בשיחה וסיכום קצר של כל פנייה."

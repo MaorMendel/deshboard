@@ -17,6 +17,17 @@ export function dateInputValue(value: Date | null | undefined): string {
   return value ? new Date(value).toISOString().slice(0, 10) : "";
 }
 
+/** "לפני 3 דק׳", "לפני שעתיים", או תאריך אם זה ישן */
+export function fmtAgo(value: Date | string | null | undefined, now = new Date()): string {
+  if (!value) return "עוד לא";
+  const minutes = Math.round((now.getTime() - new Date(value).getTime()) / 60_000);
+  if (minutes < 1) return "עכשיו";
+  if (minutes < 60) return `לפני ${minutes} דק׳`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return hours === 1 ? "לפני שעה" : `לפני ${hours} שעות`;
+  return fmtDateTime(value);
+}
+
 export function fmtSeconds(seconds: number | null | undefined): string {
   if (seconds == null) return "—";
   const m = Math.floor(seconds / 60);

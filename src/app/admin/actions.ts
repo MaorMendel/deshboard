@@ -15,10 +15,12 @@ import {
   setTenantStatus,
   updateAssistantPrompt,
   updatePlan,
+  findTenant,
 } from "@/server/admin-service";
 import { config } from "@/server/config";
 import { isElevenLabsConfigured } from "@/server/elevenlabs-client";
 import { ServiceError } from "@/server/errors";
+import { restoreVersion } from "@/server/versions";
 import { addVoice, applyVoiceToAssistants, generateSample, updateVoice, uploadSample } from "@/server/voice-admin";
 import { importVoicesFromVapi } from "@/server/voice-catalog";
 
@@ -180,6 +182,21 @@ export async function savePromptAction(tenantId: string, _prev: ActionResult, fo
     await updateAssistantPrompt(tenantId, String(form.get("prompt") ?? ""));
     refresh(tenantId);
     return { ok: "הפרומפט עודכן ב-Vapi. הוא פעיל מהשיחה הבאה." };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function restoreVersionAction(tenantId: string, versionId: string): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const result = await restoreVersion(await findTenant(tenantId), versionId);
+    refresh(tenantId);
+    return {
+      ok:
+        `ההגדרות של גרסה ${result.restoredFrom} חזרו, כגרסה ${result.version}. אפשר לבטל את זה באותה דרך.` +
+        (result.voiceInactive ? " הקול של הגרסה הזו כבוי בקטלוג, כך שלקוחות אחרים לא יכולים לבחור בו." : ""),
+    };
   } catch (err) {
     return failure(err);
   }

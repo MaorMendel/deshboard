@@ -176,6 +176,21 @@ export const accessLinks = pgTable(
 
 // ---------- calls: כל שיחה, אמיתית או ניסיון. מכאן המערכת הראשית מקבלת את הדקות. ----------
 
+// ---------- sync_state: עד איפה השיחות מסונכרנות מ-Vapi ----------
+
+/**
+ * לכל לקוח (ול-assistant המשותף של הדמואים): מתי הסתיים הסנכרון האחרון, ומאיזה רגע השיחות אצלנו שלמות.
+ * בזכות זה כל סנכרון מושך מ-Vapi רק מה שהשתנה מאז הקודם, במקום את כל החודש מחדש.
+ */
+export const syncState = pgTable("sync_state", {
+  /** "tenant:<id>" או "demo-assistant" */
+  key: text("key").primaryKey(),
+  /** כל שיחה שהשתנתה מהרגע הזה ועד synced_at כבר אצלנו */
+  coveredFrom: timestamp("covered_from", { withTimezone: true }).notNull(),
+  /** מתי התחיל הסנכרון האחרון שהצליח */
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+});
+
 /**
  * הפירוט של העלות כפי ש-Vapi מחזיר אותו (Call.costBreakdown), בדולרים.
  * נשמר כמו שהוא, כדי שאפשר יהיה להציג בפאנל כמה הלך על כל רכיב.

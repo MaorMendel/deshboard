@@ -57,6 +57,24 @@ export interface BotPageData {
   promptMax: number;
 }
 
+/** גרסה קודמת כפי שהלקוח רואה אותה בדף שלו */
+export interface CustomerVersion {
+  id: string;
+  version: number;
+  createdAt: string;
+  /** you: נשמרה מהדף של הלקוח. team: שינוי שלנו מפאנל הניהול. */
+  by: "you" | "team";
+  /** אם הגרסה נוצרה מחזרה לגרסה קודמת: מאיזו */
+  restoredFrom: number | null;
+  /** הגרסה שהבוט עובד איתה עכשיו */
+  current: boolean;
+  /** מה השתנה לעומת הגרסה שלפניה, במילים */
+  changes: string[];
+  settings: BotSettings;
+  /** שם הקול, גם אם הוא כבר לא זמין לבחירה */
+  voiceName: string;
+}
+
 export interface UpdateResult {
   settings: BotSettings;
   lastUpdatedAt: string;
