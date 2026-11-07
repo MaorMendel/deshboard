@@ -1,1 +1,1 @@
-ALTER TABLE "calls" ADD COLUMN "cost_breakdown" jsonb;
+ALTER TABLE "calls" ADD COLUMN IF NOT EXISTS "cost_breakdown" jsonb;

@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { endCall, startMockVapi } from "./mock-vapi";
@@ -276,7 +276,7 @@ async function main() {
   const expectedTotal = sum(inCycle);
   const near = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) < 1e-6, `${msg}: ${a} != ${b}`);
   const roniDetail = await admin.tenantDetail("1001");
-  const c = roniDetail.cost;
+  const c = roniDetail.cost!;
   assert.equal(roniDetail.costPeriod.kind, "cycle");
   near(c.totalUsd, expectedTotal, "סך הכול");
   near(c.llmUsd, 0.2, "מודל");
@@ -599,8 +599,8 @@ async function main() {
   mock.calls.set("call_demo_other", { id: "call_demo_other", type: "inboundPhoneCall", status: "ended", assistantId: "asst_demo", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), cost: 9 });
   const demoDetail = await admin.tenantDetail(demo.tenant.id);
   assert.equal(demoDetail.costPeriod.kind, "demo");
-  near(demoDetail.cost.totalUsd, 0.42, "העלות הסופית של הדמו");
-  near(demoDetail.cost.ttsUsd, 0.12, "קול בדמו");
+  near(demoDetail.cost!.totalUsd, 0.42, "העלות הסופית של הדמו");
+  near(demoDetail.cost!.ttsUsd, 0.12, "קול בדמו");
   assert.equal(demoDetail.previousCostUsd, null);
   assert.equal((await db.select().from(schema.calls).where(eq(schema.calls.vapiCallId, "call_demo_other"))).length, 0);
   ok("עלות דמו: מתעדכנת מ-Vapi גם אחרי שהשיחה הסתיימה. שיחות זרות על ה-assistant המשותף לא נכנסות");
@@ -643,6 +643,14 @@ async function main() {
   assert.equal(checkInternalAuth(req("Bearer wrong"))?.status, 401);
   assert.equal(checkInternalAuth(req("Bearer a-very-long-internal-secret-123")), null);
   ok("ה-API הפנימי דורש את הסוד המשותף");
+
+  // אחרון, כי משנה את מבנה ה-DB: אם מיגרציה 0005 לא הורצה, עמוד הלקוח בפאנל מסביר מה לעשות במקום לקרוס
+  await db.execute(sql`alter table calls drop column cost_breakdown`);
+  const noColumn = await admin.tenantDetail("1001");
+  assert.equal(noColumn.cost, null);
+  assert.match(noColumn.costError ?? "", /db:migrate/);
+  assert.ok(noColumn.links.length > 0, "שאר העמוד עובד");
+  ok("DB בלי מיגרציה 0005: עמוד הלקוח בפאנל נטען, ובמקום העלות מופיעה הוראה להריץ את המיגרציה");
 
   console.log("\nהכול עבר.");
   await mock.close();

@@ -385,6 +385,7 @@ npm start -- -p 3100        # פורט לבחירתך
 1. לחבר את הריפו ב-Vercel.
 2. להגדיר את כל משתני הסביבה ב-Settings → Environment Variables.
 3. לסנכרון השיחות: Vercel Cron או כל שירות cron חיצוני שקורא ל-`/api/internal/sync-calls`.
+4. Vercel לא מריץ מיגרציות. אחרי עדכון שמוסיף קובץ ל-`drizzle/`, מריצים `npm run db:migrate` מהמחשב (ראו "עדכון גרסה").
 
 ### עדכון גרסה
 
@@ -393,6 +394,8 @@ git pull && npm ci && npm run db:migrate && npm run build && pm2 restart bot-das
 ```
 
 `npm run db:migrate` מריץ רק מיגרציות חדשות, אם יש.
+
+**חשוב:** כשעדכון מוסיף קובץ חדש בתיקייה `drizzle/`, צריך להריץ `npm run db:migrate` מול ה-DB של פרודקשן לפני שמשתמשים בגרסה החדשה, גם ב-Vercel וגם כשמריצים על המחשב (`npm run dev`). מספיק להריץ מהמחשב, מתיקיית הפרויקט, עם `DATABASE_URL` של Supabase ב-`.env`. בלי זה, קוד חדש פונה לעמודות שעוד לא קיימות: עמוד הלקוח בפאנל יציג הודעה במקום העלות, והסנכרון של שיחות ודקות מ-Vapi ייכשל בשקט.
 
 ---
 
