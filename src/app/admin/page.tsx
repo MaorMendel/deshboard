@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { isAdmin } from "@/server/admin-auth";
 import { listTenantsOverview, type TenantOverview } from "@/server/admin-service";
-import { fmtDate, fmtSeconds } from "./format";
+import { fmtDate, fmtSeconds, fmtUsd } from "./format";
 import { btnCls, btnSubtleCls } from "./forms";
 
 export default function Page() {
@@ -32,6 +32,19 @@ function usageCell({ tenant, usage, demoUsedSeconds }: TenantOverview) {
   );
 }
 
+const PERIOD_WORD = { cycle: "במחזור", month: "החודש", demo: "בדמו" } as const;
+
+function costCell({ costUsd, costPeriod }: TenantOverview) {
+  return (
+    <span title={`מ-${fmtDate(costPeriod.from)}. מה ש-Vapi חייב על השיחות של הלקוח.`}>
+      <span className="tabular-nums" dir="ltr">
+        {fmtUsd(costUsd)}
+      </span>{" "}
+      <span className="text-xs text-ink-soft">{PERIOD_WORD[costPeriod.kind]}</span>
+    </span>
+  );
+}
+
 async function Home() {
   if (!(await isAdmin())) redirect("/admin/login");
   const rows = await listTenantsOverview();
@@ -56,13 +69,14 @@ async function Home() {
         </p>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-line bg-surface">
-          <table className="w-full min-w-[640px] text-sm">
+          <table className="w-full min-w-[760px] text-sm">
             <thead>
               <tr className="border-b border-line text-right text-ink-soft">
                 <th className="px-4 py-3 font-medium">שם</th>
                 <th className="px-4 py-3 font-medium">סוג</th>
                 <th className="px-4 py-3 font-medium">מצב</th>
                 <th className="px-4 py-3 font-medium">ניצול</th>
+                <th className="px-4 py-3 font-medium">עלות</th>
                 <th className="px-4 py-3 font-medium">קישורים</th>
                 <th className="px-4 py-3 font-medium">נוצר</th>
               </tr>
@@ -87,6 +101,7 @@ async function Home() {
                     )}
                   </td>
                   <td className="px-4 py-3">{usageCell(row)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">{costCell(row)}</td>
                   <td className="px-4 py-3">{row.activeLinks}</td>
                   <td className="px-4 py-3 text-ink-soft">{fmtDate(row.tenant.createdAt)}</td>
                 </tr>

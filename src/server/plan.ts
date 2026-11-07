@@ -71,3 +71,61 @@ export async function planUsageMany(tenants: Tenant[], now = new Date()): Promis
     ]),
   );
 }
+
+// ---------- התקופה שבה מציגים עלות ----------
+
+/** ההפרש בין שעון ישראל ל-UTC ברגע נתון, במילישניות */
+function jerusalemOffsetMs(at: number): number {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Jerusalem",
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    })
+      .formatToParts(new Date(at))
+      .map((x) => [x.type, Number(x.value)]),
+  );
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(at / 1000) * 1000;
+}
+
+/** חצות של היום הראשון בחודש, בשעון ישראל. months מזיז קדימה או אחורה. */
+export function startOfMonthJerusalem(now = new Date(), months = 0): Date {
+  const p = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Jerusalem", year: "numeric", month: "numeric" })
+    .formatToParts(now)
+    .reduce<Record<string, number>>((acc, x) => ({ ...acc, [x.type]: Number(x.value) }), {});
+  const utcMidnight = Date.UTC(p.year, p.month - 1 + months, 1);
+  // שני סבבים, למקרה שהמעבר לשעון קיץ נופל בין הניחוש לתוצאה
+  let t = utcMidnight - jerusalemOffsetMs(utcMidnight);
+  t = utcMidnight - jerusalemOffsetMs(t);
+  return new Date(t);
+}
+
+export interface CostPeriod {
+  from: Date;
+  to: Date;
+  /** cycle: המחזור של החבילה, כמו הדקות. month: חודש קלנדרי, ללקוח בלי חבילה. demo: מתחילת הדמו. */
+  kind: "cycle" | "month" | "demo";
+}
+
+/**
+ * באיזו תקופה מציגים את העלות של לקוח: אותה תקופה שבה סופרים לו דקות, כדי ששני המספרים יתאימו.
+ * לקוח בלי חבילה: החודש הנוכחי (שעון ישראל). דמו: כל הדמו.
+ */
+export function costPeriod(tenant: Tenant, now = new Date()): CostPeriod {
+  // בדמו כל השיחות שלו נספרות. בלי גבול תחתון, כדי ששעון לא מדויק לא יוציא שיחה מהחשבון.
+  if (tenant.type === "demo") return { from: new Date(0), to: new Date(now.getTime() + 24 * 60 * 60 * 1000), kind: "demo" };
+  if (tenant.planStartedAt) return { ...currentCycle(tenant.planStartedAt, now), kind: "cycle" };
+  return { from: startOfMonthJerusalem(now), to: startOfMonthJerusalem(now, 1), kind: "month" };
+}
+
+/** התקופה הקודמת, להשוואה. לדמו אין. */
+export function previousCostPeriod(period: CostPeriod): { from: Date; to: Date } | null {
+  if (period.kind === "demo") return null;
+  if (period.kind === "cycle") return { from: addMonths(period.from, -1), to: period.from };
+  return { from: startOfMonthJerusalem(period.from, -1), to: period.from };
+}

@@ -121,3 +121,109 @@ export async function getUsageByExternalCustomerId(
   if (!tenant) return null;
   return getUsage(db, tenant.id, from, to);
 }
+
+// ---------- עלות ----------
+// העלות היא מה ש-Vapi מדווח על כל שיחה (cost ו-costBreakdown). שיחה נספרת לפי זמן התחלתה,
+// ואם היא לא התחילה (למשל לא נענתה), לפי זמן יצירתה: גם שיחה כזו יכולה לעלות משהו.
+
+const callTime = sql`coalesce(${calls.startedAt}, ${calls.createdAt})`;
+
+/**
+ * השיחות שזמן השיחה שלהן בטווח. התאריכים נשלחים כטקסט עם טיפוס מפורש: מול ביטוי (ולא עמודה)
+ * drizzle לא יודע להמיר Date, ו-postgres-js (הדרייבר בפרודקשן) נכשל על Date גולמי.
+ */
+const callInWindow = (from: Date, to: Date) =>
+  sql`${callTime} >= ${from.toISOString()}::timestamptz and ${callTime} < ${to.toISOString()}::timestamptz`;
+// המפתחות קבועים בקוד, ולכן נכתבים כטקסט ולא כפרמטר: ל-->> עם פרמטר בלי טיפוס יש שתי משמעויות ב-Postgres
+type BreakdownKey = "vapi" | "llm" | "tts" | "stt" | "transport";
+type AnalysisKey = "summary" | "structuredData" | "successEvaluation" | "structuredOutput";
+const part = (key: BreakdownKey) =>
+  sql<string>`coalesce(sum((${calls.costBreakdown}->>${sql.raw(`'${key}'`)})::numeric), 0)`;
+const analysisPart = (key: AnalysisKey) =>
+  sql`coalesce((${calls.costBreakdown}->'analysisCostBreakdown'->>${sql.raw(`'${key}'`)})::numeric, 0)`;
+
+export interface CostSummary {
+  from: Date;
+  to: Date;
+  totalUsd: number;
+  /** העמלה של Vapi */
+  vapiUsd: number;
+  /** מודל השפה */
+  llmUsd: number;
+  /** הקול */
+  ttsUsd: number;
+  /** תמלול */
+  sttUsd: number;
+  /** טלפוניה */
+  transportUsd: number;
+  /** ניתוח אחרי השיחה (סיכום וכו') */
+  analysisUsd: number;
+  /** ההפרש בין הסכום לרכיבים: שיחות שנשמרו בלי פירוט, ועלויות קטנות אחרות */
+  otherUsd: number;
+  /** מתוך הסכום: שיחות ניסיון מהדשבורד */
+  testUsd: number;
+  /** כמה שיחות יש להן מחיר */
+  pricedCalls: number;
+  /** שניות של שיחות שהסתיימו, לחישוב עלות לדקה */
+  seconds: number;
+}
+
+export async function getCostSummary(db: Db, tenantId: string, from: Date, to: Date): Promise<CostSummary> {
+  const [row] = await db
+    .select({
+      total: sql<string>`coalesce(sum(${calls.costUsd}), 0)`,
+      vapi: part("vapi"),
+      llm: part("llm"),
+      tts: part("tts"),
+      stt: part("stt"),
+      transport: part("transport"),
+      analysis: sql<string>`coalesce(sum(${analysisPart("summary")} + ${analysisPart("structuredData")} + ${analysisPart("successEvaluation")} + ${analysisPart("structuredOutput")}), 0)`,
+      test: sql<string>`coalesce(sum(${calls.costUsd}) filter (where ${calls.type} = 'test'), 0)`,
+      priced: sql<string>`count(${calls.costUsd})`,
+      seconds: sql<string>`coalesce(sum(${calls.durationSeconds}) filter (where ${calls.status} = 'ended'), 0)`,
+    })
+    .from(calls)
+    .where(and(eq(calls.tenantId, tenantId), callInWindow(from, to)));
+
+  const n = (v: string | undefined) => Number(v ?? 0);
+  const totalUsd = n(row?.total);
+  const parts = {
+    vapiUsd: n(row?.vapi),
+    llmUsd: n(row?.llm),
+    ttsUsd: n(row?.tts),
+    sttUsd: n(row?.stt),
+    transportUsd: n(row?.transport),
+    analysisUsd: n(row?.analysis),
+  };
+  const known = Object.values(parts).reduce((a, b) => a + b, 0);
+  return {
+    from,
+    to,
+    totalUsd,
+    ...parts,
+    // הפרש של פחות מחצי סנט הוא עיגול, לא עלות
+    otherUsd: totalUsd - known > 0.005 ? totalUsd - known : 0,
+    testUsd: n(row?.test),
+    pricedCalls: n(row?.priced),
+    seconds: n(row?.seconds),
+  };
+}
+
+/** סך העלות של כמה לקוחות, לכל אחד בטווח שלו, בשאילתה אחת. לרשימה בפאנל. */
+export async function costByTenant(
+  db: Db,
+  ranges: { tenantId: string; from: Date; to: Date }[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (ranges.length === 0) return result;
+
+  const windows = ranges.map((r) => and(eq(calls.tenantId, r.tenantId), callInWindow(r.from, r.to)));
+  const rows = await db
+    .select({ tenantId: calls.tenantId, total: sql<string>`coalesce(sum(${calls.costUsd}), 0)` })
+    .from(calls)
+    .where(or(...windows))
+    .groupBy(calls.tenantId);
+
+  for (const row of rows) result.set(row.tenantId, Number(row.total));
+  return result;
+}

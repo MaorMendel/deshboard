@@ -1,7 +1,7 @@
 "use client";
 
 import { MessagesSquare, PhoneIncoming, PhoneOff, UserRound, AudioLines } from "lucide-react";
-import { useState, type ComponentType, type ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import type { BotSettings, FieldErrors, FirstSpeaker, Voice } from "@/lib/types";
 import { CLOSING_MAX, OPENING_MAX } from "@/lib/validation";
 import { cn } from "./cn";
@@ -86,7 +86,8 @@ export function CallFlow({ settings, voice, voices, errors, promptMax, onChange 
 
 /**
  * ההנחיות לבוט: מה הוא יודע על העסק ואיך הוא מתנהג בשיחה.
- * טקסט חופשי שנשלח ל-Vapi כהודעת system. מתחיל מקופל, כי הוא ארוך ורוב הזמן לא נוגעים בו.
+ * טקסט חופשי שנשלח ל-Vapi כהודעת system. תמיד גלוי, בתיבה בגובה קבוע עם גלילה, כמו הפתיח והסגירה:
+ * כשזה היה קישור מקופל, לקוחות לא שמו לב שאפשר לערוך את ההנחיות.
  */
 function PromptEditor({
   value,
@@ -99,61 +100,49 @@ function PromptEditor({
   error?: string;
   onChange: (v: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const length = value.trim().length;
   const over = length > max;
 
-  if (!open) {
-    return (
-      <div className="rounded-2xl border border-line bg-surface px-4 py-3">
-        <p className="text-ink-soft">
-          {length > 0
-            ? "הבוט עונה על שאלות ומטפל בפניות לפי ההנחיות שלו."
-            : "לבוט אין הנחיות מיוחדות. אפשר לכתוב לו מה לדעת על העסק ואיך להתנהג בשיחה."}
-        </p>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="mt-2 font-medium text-call hover:text-call-strong hover:underline"
-        >
-          {length > 0 ? "לקרוא ולערוך את ההנחיות" : "לכתוב הנחיות"}
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div>
-      <label htmlFor="prompt" className="mb-1.5 block text-sm text-ink-soft">
-        מה הבוט יודע על העסק ואיך הוא מתנהג בשיחה. כתוב בשפה חופשית, כמו הסבר לעובד חדש.
-      </label>
-      <textarea
-        id="prompt"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={14}
-        dir="auto"
-        aria-invalid={error ? true : undefined}
-        aria-describedby={error ? "prompt-error" : undefined}
+      <div
         className={cn(
-          "w-full resize-y rounded-2xl border bg-surface px-4 py-3 leading-relaxed outline-none transition-colors",
-          error ? "border-danger" : "border-line focus:border-call",
+          "rounded-2xl border bg-surface px-4 pb-2 pt-3 transition-colors",
+          error ? "border-danger" : "border-line focus-within:border-call focus-within:shadow-[0_0_0_1px_var(--color-call)]",
         )}
-      />
-      <div className="mt-1.5 flex items-start justify-between gap-3 text-sm">
-        <div>
-          {error ? (
-            <p id="prompt-error" className="text-danger" role="alert">
-              {error}
-            </p>
-          ) : (
-            <p className="text-ink-soft">השינוי נכנס לתוקף אחרי &quot;עדכן את הבוט&quot;. אפשר קודם לשמוע אותו בשיחת ניסיון.</p>
-          )}
+      >
+        <label htmlFor="prompt" className="block text-sm text-ink-soft">
+          ההנחיות של הבוט
+        </label>
+        <textarea
+          id="prompt"
+          data-in-card
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={6}
+          dir="auto"
+          placeholder="לדוגמה: אנחנו מספרה בתל אביב, פתוחים א׳-ה׳ 9:00-19:00. תספורת גברים 80 ₪. כשמישהו רוצה לקבוע תור, תשאל שם ושעה מועדפת."
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "prompt-error prompt-hint" : "prompt-hint"}
+          className="mt-1 block h-40 max-h-[70vh] min-h-24 w-full resize-y overflow-y-auto bg-transparent leading-relaxed text-ink outline-none placeholder:text-ink-soft/70"
+        />
+        <div className="mt-1 flex justify-end">
+          <span className={cn("text-xs tabular-nums", over ? "text-danger" : "text-ink-soft")}>
+            <bdi dir="ltr">
+              {length.toLocaleString("he-IL")}/{max.toLocaleString("he-IL")}
+            </bdi>
+          </span>
         </div>
-        <span className={cn("shrink-0 tabular-nums", over ? "text-danger" : "text-ink-soft")}>
-          {length.toLocaleString("he-IL")} / {max.toLocaleString("he-IL")}
-        </span>
       </div>
+      {error && (
+        <p id="prompt-error" className="mt-2 text-sm text-danger" role="alert">
+          {error}
+        </p>
+      )}
+      <p id="prompt-hint" className="mt-2 text-sm text-ink-soft">
+        מה הבוט יודע על העסק ואיך הוא מתנהג בשיחה. כותבים בשפה חופשית, כמו הסבר לעובד חדש. אפשר לגלול בתוך התיבה,
+        ולמשוך את הפינה כדי להגדיל אותה.
+      </p>
     </div>
   );
 }
@@ -288,6 +277,7 @@ function BotLine({
           </label>
           <textarea
             id={id}
+            data-in-card
             value={value}
             rows={2}
             placeholder={placeholder}
