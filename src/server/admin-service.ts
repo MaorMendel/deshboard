@@ -7,14 +7,24 @@ import { getDb } from "@/db";
 import { decryptAccessKey, encryptAccessKey, generateAccessKey, hashAccessKey } from "@/db/access-keys";
 import { accessLinks, auditLog, botVersions, calls, tenants, type AccessLink, type Call, type Tenant } from "@/db/schema";
 import { costByTenant, getCostSummary, testSecondsByTenant, type CostSummary } from "@/db/queries/usage";
-import { demoUsedSeconds, refreshOpenTestCalls, syncDemoCallsIfStale, syncTenantCallsIfStale } from "./call-sync";
+import {
+  DEMO_SYNC_KEY,
+  demoUsedSeconds,
+  lastSyncedAt,
+  refreshOpenTestCalls,
+  syncDemoCalls,
+  syncTenantCalls,
+  SYNC_MIN_INTERVAL_MS,
+  tenantSyncKey,
+} from "./call-sync";
 import { config } from "./config";
 import { ServiceError } from "./errors";
 import { costPeriod, planUsage, planUsageMany, previousCostPeriod, type CostPeriod, type PlanUsage } from "./plan";
 import { PROMPT_MAX } from "@/lib/validation";
 import { buildVoice, modelWithPrompt, promptFromModel, settingsFromAssistant, toAssistantFields } from "./vapi";
 import { isVapiConfigured, vapi } from "./vapi-client";
-import { ensureVoice, selectableVoices } from "./voice-catalog";
+import { ensureVoice, findCatalogVoice, selectableVoices } from "./voice-catalog";
+import { insertVersion } from "./versions";
 
 const E164 = /^\+[1-9][0-9]{7,14}$/;
 
@@ -308,12 +318,23 @@ export async function updateAssistantPrompt(ref: string, prompt: string) {
   }
   const before = promptFromModel(assistant.model);
   await vapi.patchAssistant(tenant.vapiAssistantId, { model: modelWithPrompt(assistant.model, trimmed) });
-  await getDb().insert(auditLog).values({
-    tenantId: tenant.id,
-    actorType: "admin",
-    action: "prompt.update",
-    before: { prompt: before },
-    after: { prompt: trimmed },
+
+  // גם עריכה מהפאנל נשמרת כגרסה, כדי שאפשר יהיה לחזור ממנה. שאר ההגדרות כמו שהן עכשיו ב-Vapi.
+  const db = getDb();
+  const [current] = tenant.currentVersionId
+    ? await db.select().from(botVersions).where(eq(botVersions.id, tenant.currentVersionId))
+    : [];
+  const voiceId = (await findCatalogVoice(assistant.voice))?.id ?? current?.settings.voiceId ?? "";
+  const settings = { ...settingsFromAssistant(assistant, voiceId), prompt: trimmed };
+  await db.transaction(async (tx) => {
+    await insertVersion(tx, tenant.id, settings, { byType: "admin" });
+    await tx.insert(auditLog).values({
+      tenantId: tenant.id,
+      actorType: "admin",
+      action: "prompt.update",
+      before: { prompt: before },
+      after: { prompt: trimmed },
+    });
   });
 }
 
@@ -375,30 +396,86 @@ export interface TenantDetail extends TenantOverview {
     Call,
     "id" | "type" | "status" | "startedAt" | "createdAt" | "durationSeconds" | "endedReason" | "customerNumber" | "costUsd"
   >[];
-  /** העלות בתקופה הנוכחית, מפורטת לפי רכיב */
-  cost: CostSummary;
+  /** העלות בתקופה הנוכחית, מפורטת לפי רכיב. null כשאי אפשר לחשב (ראו costError). */
+  cost: CostSummary | null;
   /** סך העלות בתקופה הקודמת, להשוואה. null בדמו. */
   previousCostUsd: number | null;
+  /** למה אין עלות, כשאין. שאר העמוד עובד כרגיל. */
+  costError: string | null;
+  /** מתי השיחות של הלקוח סונכרנו לאחרונה מ-Vapi. null אם לא ידוע. */
+  syncedAt: Date | null;
+  /** הסנכרון מ-Vapi עוד רץ ברקע: הדקות והעלות יתעדכנו בטעינה הבאה */
+  syncPending: boolean;
+}
+
+export interface TenantDetailOptions {
+  /**
+   * כמה זמן לחכות לסנכרון מ-Vapi לפני שמציגים את מה שיש ב-DB. ברירת מחדל: עד הסוף.
+   * אם לא הספיק, הוא ממשיך ברקע (onBackground) והעמוד לא מחכה לו.
+   */
+  syncWaitMs?: number;
+  /** מקבל את הסנכרון שעוד רץ, כדי שהשרת לא יעצור אותו באמצע (after של Next) */
+  onBackground?: (pending: Promise<unknown>) => void;
+  /** לסנכרן גם אם סונכרן לפני רגע (כפתור "רענון") */
+  forceSync?: boolean;
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** קוד השגיאה של Postgres לעמודה שלא קיימת. drizzle עוטף את השגיאה, ולכן בודקים גם את cause. */
+function isMissingColumn(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === "42703" || e?.cause?.code === "42703";
+}
+
+export const MISSING_MIGRATION_MESSAGE =
+  "כדי להציג עלות צריך לעדכן את מבנה ה-DB: להריץ npm run db:migrate מתיקיית הפרויקט. עד שזה קורה, גם הסנכרון של שיחות ודקות מ-Vapi לא נשמר.";
+
+/** העלות בתקופה ובתקופה הקודמת. אם ה-DB עוד לא עודכן (מיגרציה 0005), מחזיר הודעה במקום להפיל את העמוד. */
+async function costsFor(tenantId: string, period: CostPeriod, previous: { from: Date; to: Date } | null) {
+  const db = getDb();
+  try {
+    const [cost, previousCost] = await Promise.all([
+      getCostSummary(db, tenantId, period.from, period.to),
+      previous ? getCostSummary(db, tenantId, previous.from, previous.to) : Promise.resolve(null),
+    ]);
+    return { cost, previousCostUsd: previousCost?.totalUsd ?? null, costError: null };
+  } catch (err) {
+    if (!isMissingColumn(err)) throw err;
+    console.error("calls.cost_breakdown חסרה. צריך להריץ npm run db:migrate");
+    return { cost: null, previousCostUsd: null, costError: MISSING_MIGRATION_MESSAGE };
+  }
 }
 
 /** כל מה שעמוד הלקוח בפאנל הניהול מציג */
-export async function tenantDetail(ref: string): Promise<TenantDetail> {
+export async function tenantDetail(ref: string, opts: TenantDetailOptions = {}): Promise<TenantDetail> {
   const tenant = await findTenant(ref);
   const period = costPeriod(tenant);
   const previous = previousCostPeriod(period);
-  // מרעננים מ-Vapi לפני ההצגה, כדי שהדקות והעלות יהיו עדכניות. best effort: בלי Vapi מציגים את מה שיש ב-DB.
-  // מתחילת התקופה, כך שגם הפירוט של שיחות ישנות יותר בתקופה (מלפני שהתחלנו לשמור אותו) מתמלא.
+
+  // מרעננים מ-Vapi, כדי שהדקות והעלות יהיו עדכניות. best effort: בלי Vapi מציגים את מה שיש ב-DB.
+  // הסנכרון מושך רק מה שהשתנה מאז הקודם, ולכן בדרך כלל לוקח שבריר שנייה. אם הוא איטי, העמוד לא מחכה לו.
+  let syncPending = false;
   if (isVapiConfigured()) {
-    await Promise.all([
-      tenant.vapiAssistantId ? syncTenantCallsIfStale(tenant, period.from).catch(() => null) : null,
-      // כל השיחות של הדמו נוצרו אחרי הדמו עצמו, ולכן מספיק למשוך מה שהשתנה מאז
-      tenant.type === "demo" ? syncDemoCallsIfStale(tenant.createdAt).catch(() => null) : null,
+    const minIntervalMs = opts.forceSync ? 0 : SYNC_MIN_INTERVAL_MS;
+    const syncing = Promise.all([
+      tenant.vapiAssistantId ? syncTenantCalls(tenant, period.from, { minIntervalMs }).catch(() => null) : null,
+      // כל השיחות של הדמו נוצרו אחרי הדמו עצמו, ולכן מספיק מאז
+      tenant.type === "demo" ? syncDemoCalls(tenant.createdAt, { minIntervalMs }).catch(() => null) : null,
       refreshOpenTestCalls(tenant.id).catch(() => 0),
     ]);
+    const waitMs = opts.syncWaitMs ?? Number.POSITIVE_INFINITY;
+    const finished = Number.isFinite(waitMs)
+      ? await Promise.race([syncing.then(() => true), sleep(waitMs).then(() => false)])
+      : await syncing.then(() => true);
+    if (!finished) {
+      syncPending = true;
+      opts.onBackground?.(syncing);
+    }
   }
 
   const db = getDb();
-  const [links, versions, recentCalls, usage, demoSeconds, cost, previousCost] = await Promise.all([
+  const [links, versions, recentCalls, usage, demoSeconds, costs, syncedAt] = await Promise.all([
     db
       .select({
         id: accessLinks.id,
@@ -432,8 +509,8 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
       .limit(10),
     planUsage(tenant),
     tenant.type === "demo" ? demoUsedSeconds(tenant.id) : Promise.resolve(null),
-    getCostSummary(db, tenant.id, period.from, period.to),
-    previous ? getCostSummary(db, tenant.id, previous.from, previous.to) : Promise.resolve(null),
+    costsFor(tenant.id, period, previous),
+    lastSyncedAt(tenant.type === "demo" ? DEMO_SYNC_KEY : tenantSyncKey(tenant.id)).catch(() => null),
   ]);
 
   return {
@@ -447,10 +524,11 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
     usage,
     demoUsedSeconds: demoSeconds,
     activeLinks: links.filter((l) => !l.revokedAt).length,
-    costUsd: cost.totalUsd,
+    costUsd: costs.cost?.totalUsd ?? 0,
     costPeriod: period,
-    cost,
-    previousCostUsd: previousCost?.totalUsd ?? null,
+    ...costs,
+    syncedAt,
+    syncPending,
   };
 }
 
