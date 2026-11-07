@@ -38,6 +38,11 @@ body {
   outline-offset: 2px;
 }
 
+/* תיבת טקסט בתוך כרטיס (פתיח, הנחיות, סגירה): הכרטיס כבר מסמן פוקוס במסגרת שלו, אז בלי מסגרת שנייה בפנים */
+textarea[data-in-card]:focus-visible {
+  outline: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
