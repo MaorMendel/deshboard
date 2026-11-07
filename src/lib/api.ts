@@ -1,6 +1,6 @@
 // שכבת ה-API של הדפדפן. כל קריאה לשרת עוברת מכאן.
 
-import type { ApiErrorBody, BotSettings, TestCallResult, UpdateResult } from "./types";
+import type { ApiErrorBody, BotSettings, CustomerVersion, TestCallResult, UpdateResult } from "./types";
 
 export class ApiRequestError extends Error {
   constructor(
@@ -42,8 +42,10 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 
 export interface BotApi {
   /** baseline: ההגדרות כפי שהמסך טען אותן. לפיהן השרת כותב ל-Vapi רק את מה שהלקוח שינה. */
-  update(settings: BotSettings, baseline: BotSettings): Promise<UpdateResult>;
+  /** restoredFromVersion: הלקוח שומר גרסה קודמת כמו שהיא. רק לתיעוד בהיסטוריה. */
+  update(settings: BotSettings, baseline: BotSettings, restoredFromVersion?: number): Promise<UpdateResult>;
   testCall(settings: BotSettings): Promise<TestCallResult>;
+  versions(): Promise<{ versions: CustomerVersion[] }>;
 }
 
 /** ה-API של לקוח אחד. המפתח שב-URL מזהה את הלקוח, ולכן כל הקריאות עוברות דרכו. */
@@ -51,11 +53,13 @@ export function createBotApi(accessKey: string): BotApi {
   const base = `/api/b/${encodeURIComponent(accessKey)}`;
   return {
     /** שומר את ההגדרות ומעדכן את הבוט החי */
-    update: (settings, baseline) =>
+    update: (settings, baseline, restoredFromVersion) =>
       request<UpdateResult>(`${base}/bot`, {
         method: "PUT",
-        body: JSON.stringify({ ...settings, baseline }),
+        body: JSON.stringify({ ...settings, baseline, restoredFromVersion }),
       }),
+    /** הגרסאות הקודמות של הבוט */
+    versions: () => request<{ versions: CustomerVersion[] }>(`${base}/versions`, { method: "GET", cache: "no-store" }),
     /** מתקשר לטלפון של בעל העסק עם ההגדרות שעל המסך, גם אם עוד לא עודכנו */
     testCall: (settings) =>
       request<TestCallResult>(`${base}/test-call`, { method: "POST", body: JSON.stringify(settings) }),

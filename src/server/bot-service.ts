@@ -1,7 +1,7 @@
 // הפעולות של מסך העריכה: טעינה, עדכון הבוט ושיחת ניסיון.
 
-import { eq, sql } from "drizzle-orm";
-import type { BotPageData, BotSettings, PlanInfo, TestCallResult, UpdateResult } from "@/lib/types";
+import { and, eq, sql } from "drizzle-orm";
+import type { BotPageData, BotSettings, CustomerVersion, PlanInfo, TestCallResult, UpdateResult } from "@/lib/types";
 import {
   CUSTOMER_PROMPT_MAX,
   customerPromptLimit,
@@ -26,6 +26,7 @@ import {
 } from "./vapi";
 import { isVapiConfigured, vapi, VapiError, type AssistantFields } from "./vapi-client";
 import { findCatalogVoice, selectableVoices, toPublicVoice } from "./voice-catalog";
+import { customerVersions } from "./versions";
 
 /** פחות מזה לא שווה להתחיל שיחת דמו */
 const MIN_DEMO_CALL_SECONDS = 15;
@@ -189,6 +190,8 @@ export async function updateBot(
    * undefined (פקודה, או דפדפן ישן) = נכתבים כל השדות, כמו קודם.
    */
   baseline?: BotSettings,
+  /** הלקוח החזיר למסך גרסה קודמת ושמר אותה כמו שהיא. רק לתיעוד בהיסטוריה ("חזרה לגרסה 3"). */
+  restoredFromVersion?: number,
 ): Promise<UpdateResult> {
   const { tenant, linkId } = await requireAccess(key);
   const { settings, voice } = await validateForTenant(tenant, input);
@@ -263,6 +266,24 @@ export async function updateBot(
       ip: meta.ip,
       userAgent: meta.userAgent,
     });
+    if (restoredFromVersion) {
+      // רק מספר של גרסה שבאמת קיימת אצל הלקוח הזה
+      const [source] = await tx
+        .select({ id: botVersions.id })
+        .from(botVersions)
+        .where(and(eq(botVersions.tenantId, tenant.id), eq(botVersions.version, restoredFromVersion)));
+      if (source && source.id !== version.id) {
+        await tx.insert(auditLog).values({
+          tenantId: tenant.id,
+          actorType: "link",
+          actorLinkId: linkId,
+          action: "bot.restore",
+          after: { versionId: version.id, restoredFromVersion, settings },
+          ip: meta.ip,
+          userAgent: meta.userAgent,
+        });
+      }
+    }
     return version;
   });
 
@@ -355,4 +376,10 @@ export async function startTestCall(key: string, input: BotSettings, meta: Reque
   });
 
   return { calledNumberMasked: maskPhone(tenant.verifiedPhone), demoRemainingSeconds: demoRemaining };
+}
+
+/** הגרסאות הקודמות, לדף של הלקוח */
+export async function versionHistory(key: string): Promise<CustomerVersion[]> {
+  const { tenant } = await requireAccess(key);
+  return customerVersions(tenant);
 }

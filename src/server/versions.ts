@@ -7,7 +7,8 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { accessLinks, auditLog, botVersions, tenants, voices, type Tenant } from "@/db/schema";
-import type { BotSettings } from "@/lib/types";
+import type { BotSettings, CustomerVersion } from "@/lib/types";
+import { describeChanges } from "@/lib/version-diff";
 import { normalizeSettings } from "@/lib/validation";
 import { ServiceError } from "./errors";
 import { buildVoice, firstMessageFields, modelWithPrompt, promptFromModel } from "./vapi";
@@ -185,4 +186,25 @@ export async function restoreVersion(tenant: Tenant, versionId: string) {
   });
 
   return { version: created.version, restoredFrom: target.version, voiceInactive: !voice.isActive };
+}
+
+/**
+ * הגרסאות כפי שהלקוח רואה אותן בדף שלו: בלי שמות קישורים ובלי מה שנשלח ל-Vapi, רק ההגדרות שהוא עצמו עורך.
+ * חזרה לגרסה אצל הלקוח לא כותבת כלום ישירות: הדף טוען את ההגדרות למסך, והלקוח לוחץ "עדכן את הבוט".
+ * כך עוברות אותן בדיקות כמו בכל שמירה (קולות זמינים, אורך הנחיות), ואפשר לנסות לפני שמעדכנים.
+ */
+export async function customerVersions(tenant: Tenant, limit = 15): Promise<CustomerVersion[]> {
+  const history = await listVersions(tenant, limit);
+  const voiceName = (id: string) => history.voiceNames[id] ?? "קול שכבר לא קיים";
+  return history.versions.map((v, i) => ({
+    id: v.id,
+    version: v.version,
+    createdAt: v.createdAt.toISOString(),
+    by: v.by === "link" ? "you" : "team",
+    restoredFrom: v.restoredFrom,
+    current: v.current,
+    changes: describeChanges(history.versions[i + 1]?.settings ?? history.beforeOldest, v.settings, voiceName),
+    settings: normalizeSettings(v.settings),
+    voiceName: voiceName(v.settings.voiceId),
+  }));
 }

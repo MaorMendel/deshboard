@@ -17,7 +17,10 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/b/[key]/bot"
     } catch {
       baseline = undefined;
     }
-    return Response.json(await updateBot(key, settings, requestMeta(request), baseline));
+    // הלקוח החזיר למסך גרסה קודמת: רק לתיעוד בהיסטוריה, והשרת בודק שהגרסה באמת שלו
+    const restored = body?.restoredFromVersion;
+    const restoredFromVersion = Number.isInteger(restored) && (restored as number) > 0 ? (restored as number) : undefined;
+    return Response.json(await updateBot(key, settings, requestMeta(request), baseline, restoredFromVersion));
   } catch (err) {
     return errorResponse(err);
   }

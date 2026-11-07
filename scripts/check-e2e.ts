@@ -397,6 +397,56 @@ async function main() {
   assert.equal((mock.assistants.get("asst_roni")!.model as { temperature?: number }).temperature, 0.7, "שאר ה-model לא נפגע");
   ok("היסטוריה: כל שמירה (של הלקוח ושל הפאנל) היא גרסה. חזרה לגרסה שולחת ל-Vapi את הקול מהקטלוג, הפתיח והסגירה, שומרת הנחיות כשבגרסה אין, ואפשר לבטל אותה");
 
+  // 8ג3. גם הלקוח רואה את הגרסאות בדף שלו, ויכול לחזור לאחת: הדף מחזיר אותה למסך, והלקוח מעדכן כרגיל
+  const { GET: getVersions } = await import("../src/app/api/b/[key]/versions/route");
+  const { PUT: putBotRoute } = await import("../src/app/api/b/[key]/bot/route");
+  const keyCtx = (key: string) => ({ params: Promise.resolve({ key }) });
+  const versionsRes = await getVersions(new Request("https://x"), keyCtx(roniKey));
+  assert.equal(versionsRes.status, 200);
+  const customerList = ((await versionsRes.json()) as { versions: import("../src/lib/types").CustomerVersion[] }).versions;
+  assert.equal(customerList[0].current, true);
+  assert.ok(customerList.some((v) => v.by === "you") && customerList.some((v) => v.by === "team"));
+  assert.deepEqual(
+    Object.keys(customerList[0]).sort(),
+    ["by", "changes", "createdAt", "current", "id", "restoredFrom", "settings", "version", "voiceName"],
+    "בלי שמות קישורים ובלי מה שנשלח ל-Vapi",
+  );
+  const custV1 = customerList.at(-1)!;
+  const livePage = await getBotPageData((await findAccess(roniKey)) as Extract<Awaited<ReturnType<typeof findAccess>>, { state: "ok" }>);
+  // כמו שהדף עושה: ההגדרות של גרסה 1 למסך, ההנחיות הנוכחיות נשארות כי בגרסה 1 אין
+  const restoredDraft = { ...custV1.settings, prompt: livePage.settings.prompt };
+  const restoreRes = await putBotRoute(
+    new Request("https://x", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...restoredDraft, baseline: livePage.settings, restoredFromVersion: custV1.version }),
+    }),
+    keyCtx(roniKey),
+  );
+  assert.equal(restoreRes.status, 200);
+  assert.equal(mock.assistants.get("asst_roni")!.endCallMessage, custV1.settings.closingMessage);
+  const afterCustomerRestore = ((await (await getVersions(new Request("https://x"), keyCtx(roniKey))).json()) as {
+    versions: import("../src/lib/types").CustomerVersion[];
+  }).versions;
+  assert.equal(afterCustomerRestore[0].restoredFrom, custV1.version);
+  assert.equal(afterCustomerRestore[0].by, "you");
+  // מספר גרסה שלא קיים: השמירה עוברת, אבל לא נרשם "חזרה לגרסה"
+  const bogus = await putBotRoute(
+    new Request("https://x", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...livePage.settings, baseline: restoredDraft, restoredFromVersion: 999 }),
+    }),
+    keyCtx(roniKey),
+  );
+  assert.equal(bogus.status, 200);
+  const afterBogus = ((await (await getVersions(new Request("https://x"), keyCtx(roniKey))).json()) as {
+    versions: import("../src/lib/types").CustomerVersion[];
+  }).versions;
+  assert.equal(afterBogus[0].restoredFrom, null);
+  assert.equal((await getVersions(new Request("https://x"), keyCtx("not-a-real-key"))).status, 401);
+  ok("הלקוח רואה את הגרסאות שלו (בלי פרטים פנימיים), חוזר לגרסה דרך העדכון הרגיל (עם כל הבדיקות), וההיסטוריה רושמת \"חזרה לגרסה\"");
+
   // 10ב. הלקוח עורך את ההנחיות מהדף שלו
   const roniAccessPrompt = await findAccess(roniKey);
   assert.equal(roniAccessPrompt.state, "ok");
