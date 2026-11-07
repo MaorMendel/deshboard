@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
+import { isAdmin } from "@/server/admin-auth";
+import { pendingMigrations } from "@/server/db-health";
 import { logoutAction } from "./actions";
 
 export const metadata: Metadata = {
@@ -28,7 +31,24 @@ export default function AdminLayout({ children }: LayoutProps<"/admin">) {
           </button>
         </form>
       </header>
+      <Suspense fallback={null}>
+        <MigrationBanner />
+      </Suspense>
       {children}
+    </div>
+  );
+}
+
+/** מופיע רק כשיש מיגרציות בקוד שעוד לא הורצו על ה-DB */
+async function MigrationBanner() {
+  if (!(await isAdmin())) return null;
+  const pending = await pendingMigrations();
+  if (!pending) return null;
+  return (
+    <div role="alert" className="mb-6 rounded-xl border border-pending bg-pending-soft px-4 py-3 text-sm text-pending">
+      <strong>צריך לעדכן את מבנה ה-DB.</strong> בגרסה הזו יש {pending === 1 ? "מיגרציה אחת" : `${pending} מיגרציות`} שעוד לא
+      הורצו. מתיקיית הפרויקט, עם ה-.env של Supabase: <code dir="ltr">npm run db:migrate</code>. עד אז חלק מהדברים לא
+      יעבדו או לא יתעדכנו.
     </div>
   );
 }

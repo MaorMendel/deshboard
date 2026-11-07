@@ -1,19 +1,24 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { Suspense } from "react";
 import { isAdmin } from "@/server/admin-auth";
 import { PROMPT_MAX } from "@/lib/validation";
-import { getAssistantPrompt, tenantDetail, type TenantDetail } from "@/server/admin-service";
+import { describeChanges } from "@/lib/version-diff";
+import { findTenant, getAssistantPrompt, tenantDetail, type TenantDetail } from "@/server/admin-service";
+import { listVersions, type VersionEntry, type VersionHistory } from "@/server/versions";
 import { ServiceError } from "@/server/errors";
 import { isVapiConfigured } from "@/server/vapi-client";
 import {
   convertDemoAction,
   issueLinkAction,
+  restoreVersionAction,
   revokeLinksAction,
   savePromptAction,
   setStatusAction,
   updatePlanAction,
 } from "../../actions";
-import { fmtDate, fmtDateTime, fmtSeconds, fmtUsd, fmtUsdRate, dateInputValue } from "../../format";
+import { fmtAgo, fmtDate, fmtDateTime, fmtSeconds, fmtUsd, fmtUsdRate, dateInputValue } from "../../format";
 import { ActionForm, ConfirmButton, CopyLink, Field, inputCls } from "../../forms";
 import { AssistantSelect, PhoneNumberSelect, RefreshVapiLink, vapiOptions } from "../../vapi-options";
 
@@ -59,7 +64,13 @@ async function Detail({
 
   let detail: TenantDetail;
   try {
-    detail = await tenantDetail(id);
+    detail = await tenantDetail(id, {
+      // העמוד לא מחכה ל-Vapi יותר משנייה וחצי. אם הסנכרון איטי, הוא ממשיך ברקע ומופיע בטעינה הבאה.
+      // ברענון ידני מחכים עד שזה נגמר, כי זה מה שביקשו.
+      syncWaitMs: fresh === "1" ? 20_000 : 1_500,
+      forceSync: fresh === "1",
+      onBackground: (pending) => after(() => pending),
+    });
   } catch (err) {
     if (err instanceof ServiceError) return <p className="rounded-xl bg-danger-soft p-4 text-danger">{err.message}</p>;
     throw err;
@@ -77,6 +88,7 @@ async function Detail({
             {isDemo ? "דמו" : `לקוח #${tenant.externalCustomerId}`}
             {suspended && <span className="mr-2 rounded-full bg-danger-soft px-2 py-0.5 text-xs text-danger">מושהה</span>}
           </p>
+          <SyncStatus detail={detail} />
         </div>
         <ConfirmButton
           action={setStatusAction.bind(null, tenant.id, suspended ? "active" : "suspended")}
@@ -221,7 +233,10 @@ async function Detail({
 
       {isDemo && (
         <Section title="להפוך ללקוח משלם">
-          <ConvertSection tenantId={tenant.id} fresh={fresh === "1"} />
+          {/* רשימת ה-assistants באה מ-Vapi. בנפרד, כדי ששאר העמוד לא יחכה לה */}
+          <Suspense fallback={<p className="text-sm text-ink-soft">טוען את ה-assistants מ-Vapi...</p>}>
+            <ConvertSection tenantId={tenant.id} fresh={fresh === "1"} />
+          </Suspense>
         </Section>
       )}
 
@@ -232,6 +247,17 @@ async function Detail({
           </Suspense>
         </Section>
       )}
+
+      <Section title="היסטוריית גרסאות">
+        <p className="mb-4 text-sm text-ink-soft">
+          כל &quot;עדכן את הבוט&quot; של הלקוח, וכל עריכת הנחיות מכאן, נשמרים כגרסה. חזרה לגרסה קודמת יוצרת גרסה חדשה,
+          כך שאפשר לבטל גם אותה. שינויים שנעשו ישירות ב-Vapi לא מופיעים כאן.
+        </p>
+        {/* נטען בנפרד, כדי ששאר העמוד לא יחכה לו */}
+        <Suspense fallback={<p className="text-sm text-ink-soft">טוען את הגרסאות...</p>}>
+          <HistorySection tenantId={tenant.id} />
+        </Suspense>
+      </Section>
 
       <Section title="שיחות אחרונות">
         {recentCalls.length === 0 ? (
@@ -268,6 +294,125 @@ async function Detail({
         )}
       </Section>
     </main>
+  );
+}
+
+function versionAuthor(v: VersionEntry): string {
+  if (v.restoredFrom) return `חזרה לגרסה ${v.restoredFrom}`;
+  if (v.by === "link") return v.linkLabel ? `הלקוח (${v.linkLabel})` : "הלקוח";
+  if (v.by === "admin") return "מהפאנל";
+  return "המערכת";
+}
+
+async function HistorySection({ tenantId }: { tenantId: string }) {
+  let tenant: Awaited<ReturnType<typeof findTenant>>;
+  let history: VersionHistory;
+  try {
+    tenant = await findTenant(tenantId);
+    history = await listVersions(tenant);
+  } catch (err) {
+    console.error("history:", err);
+    return <p className="text-sm text-danger">לא הצלחתי לטעון את הגרסאות.</p>;
+  }
+  if (history.versions.length === 0) return <p className="text-sm text-ink-soft">עוד אין גרסאות.</p>;
+
+  const voiceName = (id: string) => history.voiceNames[id] ?? id;
+  const isCustomer = tenant.type === "customer";
+
+  return (
+    <>
+      <ol className="divide-y divide-line">
+        {history.versions.map((v, i) => {
+          const prev = history.versions[i + 1]?.settings ?? history.beforeOldest;
+          const changes = describeChanges(prev, v.settings, voiceName);
+          const noPrompt = !(v.settings.prompt ?? "").trim();
+          const inactive = history.inactiveVoices.includes(v.settings.voiceId);
+          const confirmText = [
+            `לחזור להגדרות של גרסה ${v.version}?`,
+            isCustomer ? "הבוט ב-Vapi יתעדכן מיד, מהשיחה הבאה." : "",
+            noPrompt ? "בגרסה הזו לא נשמרו הנחיות, ולכן ההנחיות הנוכחיות יישארו." : "",
+            inactive ? `הקול ${voiceName(v.settings.voiceId)} כבוי כרגע בקטלוג.` : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          return (
+            <li key={v.id} className="py-3 first:pt-0 last:pb-0">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">גרסה {v.version}</span>
+                    {v.current && (
+                      <span className="rounded-full bg-call-soft px-2 py-0.5 text-xs text-call-strong">פעילה עכשיו</span>
+                    )}
+                    <span className="text-sm text-ink-soft">
+                      {fmtDateTime(v.createdAt)} · {versionAuthor(v)}
+                    </span>
+                  </div>
+                  <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                    {changes.map((c) => (
+                      <li key={c} className="rounded-md bg-paper px-2 py-0.5 text-xs text-ink-soft">
+                        {c}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                {!v.current && (
+                  <ActionForm
+                    action={restoreVersionAction.bind(null, tenantId, v.id)}
+                    submitLabel="לחזור לגרסה הזו"
+                    subtle
+                    confirmText={confirmText}
+                  />
+                )}
+              </div>
+              <details className="mt-2">
+                <summary className="cursor-pointer text-sm text-call hover:underline">להציג את ההגדרות</summary>
+                <dl className="mt-2 grid gap-x-4 gap-y-2 rounded-lg bg-paper p-3 text-sm sm:grid-cols-[auto_1fr]">
+                  <dt className="text-ink-soft">קול</dt>
+                  <dd>
+                    {voiceName(v.settings.voiceId)}
+                    {inactive && <span className="mr-2 text-xs text-pending">(כבוי בקטלוג)</span>}
+                  </dd>
+                  <dt className="text-ink-soft">מי מדבר ראשון</dt>
+                  <dd>{v.settings.firstSpeaker === "bot" ? "הבוט" : "המתקשר"}</dd>
+                  <dt className="text-ink-soft">פתיח</dt>
+                  <dd className="whitespace-pre-wrap">{v.settings.openingMessage || "—"}</dd>
+                  <dt className="text-ink-soft">משפט סיום</dt>
+                  <dd className="whitespace-pre-wrap">{v.settings.closingMessage || "—"}</dd>
+                  <dt className="text-ink-soft">הנחיות</dt>
+                  <dd>
+                    {noPrompt ? (
+                      <span className="text-ink-soft">לא נשמרו בגרסה הזו</span>
+                    ) : (
+                      <div dir="auto" className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-surface p-2">
+                        {v.settings.prompt}
+                      </div>
+                    )}
+                  </dd>
+                </dl>
+              </details>
+            </li>
+          );
+        })}
+      </ol>
+      {history.more && <p className="mt-3 text-xs text-ink-soft">מוצגות {history.versions.length} הגרסאות האחרונות.</p>}
+    </>
+  );
+}
+
+/** מתי הדקות והעלות נמשכו מ-Vapi, וקישור לרענון */
+function SyncStatus({ detail }: { detail: TenantDetail }) {
+  const { syncedAt, syncPending, tenant } = detail;
+  if (!tenant.vapiAssistantId && tenant.type !== "demo") return null;
+  return (
+    <p className="mt-1 text-xs text-ink-soft">
+      {syncPending
+        ? "השיחות מתעדכנות מ-Vapi ברקע. הדקות והעלות יתעדכנו בטעינה הבאה."
+        : `השיחות עודכנו מ-Vapi ${fmtAgo(syncedAt)}.`}{" "}
+      <Link href={`/admin/t/${tenant.id}?fresh=1`} prefetch={false} className="text-call hover:underline">
+        רענון
+      </Link>
+    </p>
   );
 }
 

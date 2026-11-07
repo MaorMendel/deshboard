@@ -227,6 +227,26 @@ async function main() {
   assert.equal(usage.totalMinutesRoundedPerCall, 4); // 2 + 2
   ok("סנכרון שיחות מ-Vapi: נכנסות נשמרות, ניסיון נשאר ניסיון, בלי כפילויות. דקות: 120 שניות אמיתיות + 75 ניסיון");
 
+  // 8א. סנכרון מצטבר: מושכים מ-Vapi רק מה שהשתנה מאז הסנכרון הקודם
+  const { lastSyncedAt, tenantSyncKey } = await import("../src/server/call-sync");
+  const askedSince = () =>
+    new URL("http://x" + mock.requests.find((r) => r.path.startsWith("/call?"))!.path).searchParams.get("updatedAtGe")!;
+  const syncedBefore = (await lastSyncedAt(tenantSyncKey(roni.tenant.id)))!;
+  assert.ok(syncedBefore, "נשמר מתי סונכרן");
+  mock.requests.length = 0;
+  await syncTenantCalls(roni.tenant, from);
+  assert.equal(askedSince(), new Date(syncedBefore.getTime() - 10 * 60_000).toISOString(), "רק מהסנכרון הקודם, עם 10 דקות חפיפה");
+  // תקופה מוקדמת ממה שכבר מכוסה: מושכים הכול ממנה
+  const olderFrom = new Date(from.getTime() - 7 * 86_400_000);
+  mock.requests.length = 0;
+  await syncTenantCalls(roni.tenant, olderFrom);
+  assert.equal(askedSince(), olderFrom.toISOString());
+  mock.requests.length = 0;
+  assert.equal((await syncTenantCalls(roni.tenant, from, { minIntervalMs: 60_000 })).skipped, true);
+  assert.equal(mock.requests.length, 0, "סונכרן לפני רגע: לא פונים ל-Vapi");
+  assert.equal((await db.select().from(schema.calls).where(eq(schema.calls.tenantId, roni.tenant.id))).length, allCalls.length, "בלי כפילויות");
+  ok("סנכרון מצטבר: רק מה שהשתנה מאז הפעם הקודמת (עם חפיפה). תקופה מוקדמת יותר נמשכת במלואה. סונכרן לפני רגע: בלי פנייה ל-Vapi");
+
   // 8ב. חבילה: הגדרה, ניצול במחזור הנוכחי, וולידציה
   await admin.updatePlan("1001", { startedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), minutes: 100 });
   const roniAccessPlan = await findAccess(roniKey);
@@ -305,6 +325,20 @@ async function main() {
   assert.equal(previousCostPeriod(noPlan)!.from.toISOString(), "2026-09-30T21:00:00.000Z", "1 באוקטובר, שעון קיץ");
   ok("עלות: נשמרת מ-Vapi עם פירוט (מודל, קול, תמלול, טלפוניה, Vapi, ניתוח), באותו מחזור כמו הדקות, כולל שיחות שלא נענו. התקופה הקודמת נפרדת");
 
+  // 8ב3. העמוד בפאנל לא מחכה ל-Vapi: מציג את מה שיש, והסנכרון ממשיך ברקע
+  const bgIso = new Date().toISOString();
+  mock.calls.set("call_in_bg", { id: "call_in_bg", type: "inboundPhoneCall", status: "ended", assistantId: "asst_roni", createdAt: bgIso, updatedAt: bgIso, startedAt: new Date(Date.now() - 50_000).toISOString(), endedAt: bgIso, cost: 0.07 });
+  let background: Promise<unknown> | null = null;
+  const quick = await admin.tenantDetail("1001", { syncWaitMs: 0, forceSync: true, onBackground: (p) => (background = p) });
+  assert.equal(quick.syncPending, true, "לא חיכה לסנכרון");
+  assert.ok(background, "הסנכרון הועבר לרקע");
+  await background;
+  assert.equal((await db.select().from(schema.calls).where(eq(schema.calls.vapiCallId, "call_in_bg"))).length, 1, "והוא הסתיים");
+  const waited = await admin.tenantDetail("1001", { syncWaitMs: 5_000, forceSync: true });
+  assert.equal(waited.syncPending, false);
+  assert.ok(waited.syncedAt && Date.now() - waited.syncedAt.getTime() < 60_000);
+  ok("עמוד הלקוח בפאנל: מציג מיד את מה שב-DB, הסנכרון מ-Vapi ממשיך ברקע, ומוצג מתי סונכרן לאחרונה");
+
   // 8ג. עריכת הפרומפט: רק הודעת ה-system משתנה, שאר ה-model נשמר
   mock.assistants.get("asst_roni")!.model = {
     provider: "openai",
@@ -323,6 +357,45 @@ async function main() {
   assert.equal((await admin.getAssistantPrompt("1001")).prompt, "פרומפט חדש לבדיקה");
   await expectError("validation", () => admin.updateAssistantPrompt("1001", "   "));
   ok("עריכת פרומפט בפאנל: הודעת ה-system מתעדכנת ב-Vapi, הטמפרטורה ושאר ההודעות לא נפגעות");
+
+  // 8ג2. היסטוריית גרסאות: גם עריכה מהפאנל נשמרת, ואפשר לחזור לכל גרסה
+  const versionsMod = await import("../src/server/versions");
+  const { describeChanges } = await import("../src/lib/version-diff");
+  let hist = await versionsMod.listVersions(await admin.findTenant("1001"));
+  const top = hist.versions[0];
+  assert.equal(top.current, true);
+  assert.equal(top.by, "admin");
+  assert.equal(top.settings.prompt, "פרומפט חדש לבדיקה", "עריכת הנחיות מהפאנל יצרה גרסה");
+  const voiceName = (id: string) => hist.voiceNames[id] ?? id;
+  assert.ok(describeChanges(hist.versions[1].settings, top.settings, voiceName).some((c) => c.startsWith("הנחיות")));
+  const v1 = hist.versions.at(-1)!;
+  assert.equal(v1.version, 1);
+  assert.deepEqual(describeChanges(null, v1.settings, voiceName), ["גרסה ראשונה"]);
+  assert.ok(hist.versions.some((v) => v.by === "link"), "שמירות של הלקוח מופיעות");
+
+  mock.requests.length = 0;
+  const restored = await versionsMod.restoreVersion(await admin.findTenant("1001"), v1.id);
+  assert.equal(restored.restoredFrom, 1);
+  assert.equal(restored.version, top.version + 1);
+  const restorePatch = mock.requests.find((r) => r.method === "PATCH")!.body as Record<string, unknown>;
+  assert.deepEqual(restorePatch.voice, noaVoice, "הקול נבנה מהקטלוג");
+  assert.equal(restorePatch.endCallMessage, v1.settings.closingMessage);
+  assert.equal(restorePatch.firstMessage, v1.settings.openingMessage);
+  assert.equal(restorePatch.model, undefined, "בגרסה 1 אין הנחיות: לא נוגעים בהנחיות הנוכחיות");
+  assert.equal(mock.assistants.get("asst_roni")!.endCallMessage, v1.settings.closingMessage);
+  hist = await versionsMod.listVersions(await admin.findTenant("1001"));
+  assert.equal(hist.versions[0].restoredFrom, 1);
+  assert.equal(hist.versions[0].current, true);
+  assert.equal(hist.versions[0].settings.prompt, "פרומפט חדש לבדיקה", "הגרסה החדשה שומרת את ההנחיות שנשארו");
+  await expectError("validation", async () => versionsMod.restoreVersion(await admin.findTenant("1001"), hist.versions[0].id));
+  await expectError("validation", async () =>
+    versionsMod.restoreVersion(await admin.findTenant("1001"), "00000000-0000-0000-0000-000000000000"),
+  );
+  // וחזרה לגרסה שלפני השחזור: גם שחזור אפשר לבטל
+  await versionsMod.restoreVersion(await admin.findTenant("1001"), top.id);
+  assert.equal(mock.assistants.get("asst_roni")!.endCallMessage, top.settings.closingMessage);
+  assert.equal((mock.assistants.get("asst_roni")!.model as { temperature?: number }).temperature, 0.7, "שאר ה-model לא נפגע");
+  ok("היסטוריה: כל שמירה (של הלקוח ושל הפאנל) היא גרסה. חזרה לגרסה שולחת ל-Vapi את הקול מהקטלוג, הפתיח והסגירה, שומרת הנחיות כשבגרסה אין, ואפשר לבטל אותה");
 
   // 10ב. הלקוח עורך את ההנחיות מהדף שלו
   const roniAccessPrompt = await findAccess(roniKey);
@@ -610,6 +683,16 @@ async function main() {
   await updateBot(demoKey, { voiceId: itaiId, firstSpeaker: "bot", openingMessage: "פתיח של דמו", closingMessage: "" }, meta);
   assert.equal(mock.requests.filter((r) => r.method === "PATCH").length, 0);
   ok("עדכון בדמו נשמר ב-DB בלבד, בלי לגעת באף assistant");
+  const demoHist = await (await import("../src/server/versions")).listVersions(await admin.findTenant(demo.tenant.id));
+  mock.requests.length = 0;
+  await (await import("../src/server/versions")).restoreVersion(await admin.findTenant(demo.tenant.id), demoHist.versions.at(-1)!.id);
+  assert.equal(mock.requests.filter((r) => r.method === "PATCH").length, 0, "שחזור בדמו לא נוגע ב-Vapi");
+  const demoAfter = await admin.findTenant(demo.tenant.id);
+  const [demoCurrent] = await db.select().from(schema.botVersions).where(eq(schema.botVersions.id, demoAfter.currentVersionId!));
+  assert.equal(demoCurrent.settings.openingMessage, demoHist.versions.at(-1)!.settings.openingMessage);
+  // וחזרה לגרסה עם "פתיח של דמו", כי ההמרה ללקוח בהמשך בודקת אותו
+  await (await import("../src/server/versions")).restoreVersion(demoAfter, demoHist.versions[0].id);
+  ok("שחזור גרסה בדמו: רק ב-DB");
 
   // 11. הפיכת דמו ללקוח: ההגדרות מהדמו עוברות ל-assistant שלו
   await admin.convertDemo(demo.tenant.id, { externalCustomerId: "1002", vapiAssistantId: "asst_dental" });
@@ -643,6 +726,18 @@ async function main() {
   assert.equal(checkInternalAuth(req("Bearer wrong"))?.status, 401);
   assert.equal(checkInternalAuth(req("Bearer a-very-long-internal-secret-123")), null);
   ok("ה-API הפנימי דורש את הסוד המשותף");
+
+  // מיגרציות: הפאנל יודע להגיד כשיש מיגרציה שלא הורצה
+  const { pendingMigrations } = await import("../src/server/db-health");
+  assert.equal(await pendingMigrations(), 0);
+  await db.execute(sql`delete from drizzle.__drizzle_migrations where created_at = (select max(created_at) from drizzle.__drizzle_migrations)`);
+  assert.equal(await pendingMigrations(), 1);
+  // בלי טבלת sync_state (מיגרציה 0006 לא הורצה): הסנכרון עובד כמו פעם, הכול מתחילת התקופה
+  await db.execute(sql`drop table sync_state`);
+  mock.requests.length = 0;
+  await syncTenantCalls(roni.tenant, from);
+  assert.equal(askedSince(), from.toISOString());
+  ok("מיגרציה שלא הורצה: הפאנל מזהה אותה. בלי טבלת sync_state הסנכרון חוזר לעבוד כמו פעם, במקום להיכשל");
 
   // אחרון, כי משנה את מבנה ה-DB: אם מיגרציה 0005 לא הורצה, עמוד הלקוח בפאנל מסביר מה לעשות במקום לקרוס
   await db.execute(sql`alter table calls drop column cost_breakdown`);

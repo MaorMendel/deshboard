@@ -43,6 +43,13 @@
       "when": 1794043723428,
       "tag": "0005_call_cost_breakdown",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794048355981,
+      "tag": "0006_sync_state",
+      "breakpoints": true
     }
   ]
 }
