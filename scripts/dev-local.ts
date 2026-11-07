@@ -90,6 +90,31 @@ async function main() {
   });
   const demo = await admin.createDemo({ name: "קליניקת שקד", verifiedPhone: "0521234567" });
 
+  // כמה שיחות עבר עם מחיר, כדי שבפאנל יהיה מה לראות בדקות ובעלות
+  const DAY = 24 * 60 * 60 * 1000;
+  for (let i = 0; i < 6; i++) {
+    const start = Date.now() - (i + 1) * DAY * 1.3 - 3_600_000;
+    const seconds = 60 + i * 47;
+    const minutes = seconds / 60;
+    const parts = { llm: 0.035 * minutes, tts: 0.03 * minutes, stt: 0.01 * minutes, transport: 0.012 * minutes, vapi: 0.05 * minutes };
+    const total = Object.values(parts).reduce((a, b) => a + b, 0) + 0.004;
+    mock.calls.set(`call_past_${i}`, {
+      id: `call_past_${i}`,
+      type: "inboundPhoneCall",
+      status: "ended",
+      assistantId: "asst_roni",
+      customer: { number: `+97250000000${i}` },
+      createdAt: new Date(start).toISOString(),
+      updatedAt: new Date(start + seconds * 1000).toISOString(),
+      startedAt: new Date(start).toISOString(),
+      endedAt: new Date(start + seconds * 1000).toISOString(),
+      cost: total,
+      costBreakdown: { ...parts, total, analysisCostBreakdown: { summary: 0.004 } },
+    });
+  }
+  const { syncTenantCalls } = await import("../src/server/call-sync");
+  await syncTenantCalls(customer.tenant, new Date(Date.now() - 30 * DAY));
+
   const socket = new PGLiteSocketServer({ db: pglite, port: DB_PORT, host: "127.0.0.1" });
   await socket.start();
 

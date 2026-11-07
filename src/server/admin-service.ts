@@ -6,11 +6,11 @@ import type { BotSettings } from "@/lib/types";
 import { getDb } from "@/db";
 import { decryptAccessKey, encryptAccessKey, generateAccessKey, hashAccessKey } from "@/db/access-keys";
 import { accessLinks, auditLog, botVersions, calls, tenants, type AccessLink, type Call, type Tenant } from "@/db/schema";
-import { testSecondsByTenant } from "@/db/queries/usage";
-import { demoUsedSeconds, refreshOpenTestCalls, syncTenantCallsIfStale } from "./call-sync";
+import { costByTenant, getCostSummary, testSecondsByTenant, type CostSummary } from "@/db/queries/usage";
+import { demoUsedSeconds, refreshOpenTestCalls, syncDemoCallsIfStale, syncTenantCallsIfStale } from "./call-sync";
 import { config } from "./config";
 import { ServiceError } from "./errors";
-import { currentCycle, planUsage, planUsageMany, type PlanUsage } from "./plan";
+import { costPeriod, planUsage, planUsageMany, previousCostPeriod, type CostPeriod, type PlanUsage } from "./plan";
 import { PROMPT_MAX } from "@/lib/validation";
 import { buildVoice, modelWithPrompt, promptFromModel, settingsFromAssistant, toAssistantFields } from "./vapi";
 import { isVapiConfigured, vapi } from "./vapi-client";
@@ -323,6 +323,9 @@ export interface TenantOverview {
   /** בדמו: כמה שניות ניסיון כבר נוצלו */
   demoUsedSeconds: number | null;
   activeLinks: number;
+  /** כמה Vapi חייב על השיחות של הלקוח בתקופה (costPeriod), בדולרים */
+  costUsd: number;
+  costPeriod: CostPeriod;
 }
 
 /** כל הלקוחות והדמואים, עם הניצול הנוכחי, לרשימה בפאנל הניהול */
@@ -339,13 +342,24 @@ export async function listTenantsOverview(): Promise<TenantOverview[]> {
   // שתי שאילתות לכל הלקוחות יחד, במקום שתיים לכל לקוח
   const all = rows.map((r) => r.tenant);
   const demoIds = all.filter((t) => t.type === "demo").map((t) => t.id);
-  const [usage, demoSeconds] = await Promise.all([planUsageMany(all), testSecondsByTenant(db, demoIds)]);
+  const now = new Date();
+  const periods = new Map(all.map((t) => [t.id, costPeriod(t, now)]));
+  const [usage, demoSeconds, costs] = await Promise.all([
+    planUsageMany(all, now),
+    testSecondsByTenant(db, demoIds),
+    costByTenant(
+      db,
+      all.map((t) => ({ tenantId: t.id, ...periods.get(t.id)! })),
+    ),
+  ]);
 
   return rows.map((row) => ({
     tenant: row.tenant,
     activeLinks: row.activeLinks,
     usage: usage.get(row.tenant.id) ?? null,
     demoUsedSeconds: row.tenant.type === "demo" ? (demoSeconds.get(row.tenant.id) ?? 0) : null,
+    costUsd: costs.get(row.tenant.id) ?? 0,
+    costPeriod: periods.get(row.tenant.id)!,
   }));
 }
 
@@ -357,25 +371,34 @@ export interface AdminLink extends Pick<AccessLink, "id" | "label" | "createdAt"
 export interface TenantDetail extends TenantOverview {
   links: AdminLink[];
   settings: BotSettings | null;
-  recentCalls: Pick<Call, "id" | "type" | "status" | "startedAt" | "durationSeconds" | "endedReason" | "customerNumber">[];
+  recentCalls: Pick<
+    Call,
+    "id" | "type" | "status" | "startedAt" | "createdAt" | "durationSeconds" | "endedReason" | "customerNumber" | "costUsd"
+  >[];
+  /** העלות בתקופה הנוכחית, מפורטת לפי רכיב */
+  cost: CostSummary;
+  /** סך העלות בתקופה הקודמת, להשוואה. null בדמו. */
+  previousCostUsd: number | null;
 }
 
 /** כל מה שעמוד הלקוח בפאנל הניהול מציג */
 export async function tenantDetail(ref: string): Promise<TenantDetail> {
   const tenant = await findTenant(ref);
-  // מרעננים מ-Vapi לפני ההצגה, כדי שהדקות יהיו עדכניות. best effort: בלי Vapi מציגים את מה שיש ב-DB.
+  const period = costPeriod(tenant);
+  const previous = previousCostPeriod(period);
+  // מרעננים מ-Vapi לפני ההצגה, כדי שהדקות והעלות יהיו עדכניות. best effort: בלי Vapi מציגים את מה שיש ב-DB.
+  // מתחילת התקופה, כך שגם הפירוט של שיחות ישנות יותר בתקופה (מלפני שהתחלנו לשמור אותו) מתמלא.
   if (isVapiConfigured()) {
-    const since = tenant.planStartedAt
-      ? currentCycle(tenant.planStartedAt).from
-      : new Date(Date.now() - 24 * 60 * 60 * 1000);
     await Promise.all([
-      tenant.vapiAssistantId ? syncTenantCallsIfStale(tenant, since).catch(() => null) : null,
+      tenant.vapiAssistantId ? syncTenantCallsIfStale(tenant, period.from).catch(() => null) : null,
+      // כל השיחות של הדמו נוצרו אחרי הדמו עצמו, ולכן מספיק למשוך מה שהשתנה מאז
+      tenant.type === "demo" ? syncDemoCallsIfStale(tenant.createdAt).catch(() => null) : null,
       refreshOpenTestCalls(tenant.id).catch(() => 0),
     ]);
   }
 
   const db = getDb();
-  const [links, versions, recentCalls, usage, demoSeconds] = await Promise.all([
+  const [links, versions, recentCalls, usage, demoSeconds, cost, previousCost] = await Promise.all([
     db
       .select({
         id: accessLinks.id,
@@ -400,6 +423,8 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
         durationSeconds: calls.durationSeconds,
         endedReason: calls.endedReason,
         customerNumber: calls.customerNumber,
+        createdAt: calls.createdAt,
+        costUsd: calls.costUsd,
       })
       .from(calls)
       .where(eq(calls.tenantId, tenant.id))
@@ -407,6 +432,8 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
       .limit(10),
     planUsage(tenant),
     tenant.type === "demo" ? demoUsedSeconds(tenant.id) : Promise.resolve(null),
+    getCostSummary(db, tenant.id, period.from, period.to),
+    previous ? getCostSummary(db, tenant.id, previous.from, previous.to) : Promise.resolve(null),
   ]);
 
   return {
@@ -420,6 +447,10 @@ export async function tenantDetail(ref: string): Promise<TenantDetail> {
     usage,
     demoUsedSeconds: demoSeconds,
     activeLinks: links.filter((l) => !l.revokedAt).length,
+    costUsd: cost.totalUsd,
+    costPeriod: period,
+    cost,
+    previousCostUsd: previousCost?.totalUsd ?? null,
   };
 }
 

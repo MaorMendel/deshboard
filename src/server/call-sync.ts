@@ -4,6 +4,7 @@
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { calls, tenants, type Call } from "@/db/schema";
+import { config } from "./config";
 import { isVapiConfigured, vapi, type VapiCall } from "./vapi-client";
 
 /** שיחת ניסיון שעדיין "פתוחה" אחרי הזמן הזה נחשבת תקועה ונסגרת, כדי שלא תחסום שיחות חדשות */
@@ -49,6 +50,7 @@ function fieldsFromVapi(call: VapiCall) {
     endedAt: call.endedAt ? new Date(call.endedAt) : null,
     durationSeconds: durationSeconds(call),
     costUsd: call.cost != null ? call.cost.toFixed(4) : null,
+    costBreakdown: call.costBreakdown ?? null,
     endedReason: call.endedReason ?? null,
   };
 }
@@ -96,19 +98,25 @@ export async function refreshOpenTestCalls(tenantId?: string): Promise<number> {
   return updated;
 }
 
+/** כל השיחות של assistant שהשתנו מאז התאריך, דף אחרי דף (Vapi מחזיר עד 1000 בכל פעם) */
+async function* callsUpdatedSince(assistantId: string, since: Date): AsyncGenerator<VapiCall[]> {
+  let cursor: string | undefined;
+  for (let page = 0; page < 50; page++) {
+    const batch = await vapi.listCalls({ assistantId, updatedAtGe: since.toISOString(), createdAtLt: cursor });
+    yield batch;
+    if (batch.length < 1000) return;
+    // הדף הבא: שיחות שנוצרו לפני הישנה ביותר בדף הזה
+    cursor = batch.reduce((min, c) => (c.createdAt < min ? c.createdAt : min), batch[0].createdAt);
+  }
+}
+
 /** מושך את כל השיחות של ה-assistant של לקוח שהשתנו מאז התאריך, ומכניס או מעדכן אותן */
 export async function syncTenantCalls(tenant: { id: string; vapiAssistantId: string | null }, since: Date) {
   if (!tenant.vapiAssistantId) return { fetched: 0 };
   const db = getDb();
   let fetched = 0;
-  let cursor: string | undefined;
 
-  for (let page = 0; page < 50; page++) {
-    const batch = await vapi.listCalls({
-      assistantId: tenant.vapiAssistantId,
-      updatedAtGe: since.toISOString(),
-      createdAtLt: cursor,
-    });
+  for await (const batch of callsUpdatedSince(tenant.vapiAssistantId, since)) {
     for (const call of batch) {
       const fields = fieldsFromVapi(call);
       await db
@@ -125,11 +133,38 @@ export async function syncTenantCalls(tenant: { id: string; vapiAssistantId: str
         .onConflictDoUpdate({ target: calls.vapiCallId, set: fields });
     }
     fetched += batch.length;
-    if (batch.length < 1000) break;
-    // הדף הבא: שיחות שנוצרו לפני הישנה ביותר בדף הזה
-    cursor = batch.reduce((min, c) => (c.createdAt < min ? c.createdAt : min), batch[0].createdAt);
   }
   return { fetched };
+}
+
+/**
+ * שיחות הניסיון של הדמואים רצות על ה-assistant המשותף, ולכן syncTenantCalls לא רואה אותן.
+ * עד עכשיו הן התעדכנו רק כל עוד היו פתוחות, אבל העלות הסופית (כולל הסיכום שאחרי השיחה) מגיעה
+ * מ-Vapi קצת אחרי הסיום. כאן מעדכנים את השורות שכבר קיימות אצלנו, לפי המזהה של השיחה.
+ * שיחה של ה-assistant המשותף שלא נוצרה מהדשבורד לא נכנסת, כי אין לה לקוח.
+ */
+export async function syncDemoCalls(since: Date): Promise<{ fetched: number; updated: number }> {
+  const demoAssistantId = config.vapi.demoAssistantId();
+  if (!demoAssistantId) return { fetched: 0, updated: 0 };
+  const db = getDb();
+  let fetched = 0;
+  let updated = 0;
+
+  for await (const batch of callsUpdatedSince(demoAssistantId, since)) {
+    fetched += batch.length;
+    if (!batch.length) continue;
+    const known = await db
+      .select({ vapiCallId: calls.vapiCallId })
+      .from(calls)
+      .where(inArray(calls.vapiCallId, batch.map((c) => c.id)));
+    const knownIds = new Set(known.map((k) => k.vapiCallId));
+    for (const call of batch) {
+      if (!knownIds.has(call.id)) continue;
+      await db.update(calls).set(fieldsFromVapi(call)).where(eq(calls.vapiCallId, call.id));
+      updated++;
+    }
+  }
+  return { fetched, updated };
 }
 
 /**
@@ -139,6 +174,20 @@ export async function syncTenantCalls(tenant: { id: string; vapiAssistantId: str
  */
 const lastSyncAt = new Map<string, number>();
 export const SYNC_MIN_INTERVAL_MS = 60_000;
+
+const DEMO_SYNC_KEY = "demo-assistant";
+
+/** כמו syncDemoCalls, אבל מדלג אם סונכרן לפני פחות מדקה */
+export async function syncDemoCallsIfStale(since: Date, minIntervalMs = SYNC_MIN_INTERVAL_MS) {
+  if (Date.now() - (lastSyncAt.get(DEMO_SYNC_KEY) ?? 0) < minIntervalMs) return { fetched: 0, updated: 0, skipped: true };
+  lastSyncAt.set(DEMO_SYNC_KEY, Date.now());
+  try {
+    return await syncDemoCalls(since);
+  } catch (err) {
+    lastSyncAt.delete(DEMO_SYNC_KEY);
+    throw err;
+  }
+}
 
 /** כמו syncTenantCalls, אבל מדלג אם סונכרן לפני פחות מדקה */
 export async function syncTenantCallsIfStale(
@@ -157,10 +206,11 @@ export async function syncTenantCallsIfStale(
   }
 }
 
-/** סנכרון מלא: שיחות ניסיון פתוחות, ואז כל השיחות של כל הלקוחות המחוברים */
+/** סנכרון מלא: שיחות ניסיון פתוחות, שיחות הדמואים, ואז כל השיחות של כל הלקוחות המחוברים */
 export async function syncAllCalls(since: Date) {
   const db = getDb();
   const refreshedTests = await refreshOpenTestCalls();
+  const demos = await syncDemoCalls(since).catch((err: Error) => ({ fetched: 0, updated: 0, error: err.message }));
   const connected = await db
     .select({ id: tenants.id, name: tenants.name, vapiAssistantId: tenants.vapiAssistantId })
     .from(tenants)
@@ -175,7 +225,7 @@ export async function syncAllCalls(since: Date) {
       results.push({ tenant: t.name, fetched: 0, error: (err as Error).message });
     }
   }
-  return { refreshedTests, tenants: results };
+  return { refreshedTests, demos, tenants: results };
 }
 
 /** כמה שניות דמו כבר נוצלו (שיחות ניסיון שהסתיימו) */

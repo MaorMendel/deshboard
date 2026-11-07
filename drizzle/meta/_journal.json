@@ -36,6 +36,13 @@
       "when": 1793200144750,
       "tag": "0004_voice_sample_audio",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794043723428,
+      "tag": "0005_call_cost_breakdown",
+      "breakpoints": true
     }
   ]
 }

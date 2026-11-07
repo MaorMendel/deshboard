@@ -249,6 +249,62 @@ async function main() {
   await expectError("validation", () => admin.updatePlan("1001", { startedAt: new Date(), minutes: -5 }));
   ok("חבילה: 100 דקות בחודש, 195 שניות שיחה = 3 דקות (בלי עיגול לשיחה). חבילה חלקית או שלילית נדחית");
 
+  // 8ב2. עלות: מה ש-Vapi חייב על השיחות, מפורט לפי רכיב, באותה תקופה כמו הדקות
+  const breakdown3 = {
+    transport: 0.05,
+    stt: 0.06,
+    llm: 0.2,
+    tts: 0.1,
+    vapi: 0.05,
+    total: 0.5,
+    llmPromptTokens: 1000,
+    analysisCostBreakdown: { summary: 0.02, structuredData: 0.01 },
+  };
+  const nowIso = new Date().toISOString();
+  mock.calls.set("call_in_3", { id: "call_in_3", type: "inboundPhoneCall", status: "ended", assistantId: "asst_roni", createdAt: nowIso, updatedAt: nowIso, startedAt: new Date(Date.now() - 100_000).toISOString(), endedAt: new Date(Date.now() - 40_000).toISOString(), cost: 0.5, costBreakdown: breakdown3 });
+  // שיחה יוצאת שלא נענתה: אין לה זמן התחלה, אבל יש לה מחיר
+  mock.calls.set("call_out_noanswer", { id: "call_out_noanswer", type: "outboundPhoneCall", status: "ended", assistantId: "asst_roni", createdAt: nowIso, updatedAt: nowIso, cost: 0.01, endedReason: "customer-did-not-answer" });
+  await syncTenantCalls(roni.tenant, from);
+  const [row3] = await db.select().from(schema.calls).where(eq(schema.calls.vapiCallId, "call_in_3"));
+  assert.deepEqual(row3.costBreakdown, breakdown3, "הפירוט נשמר כמו ש-Vapi מחזיר אותו");
+  // שיחה מהמחזור הקודם (החבילה התחילה לפני 10 ימים): נספרת רק ב"תקופה הקודמת"
+  await db.insert(schema.calls).values({ tenantId: roni.tenant.id, vapiCallId: "call_old", type: "inbound", status: "ended", startedAt: new Date(Date.now() - 15 * 86_400_000), createdAt: new Date(Date.now() - 15 * 86_400_000), durationSeconds: 60, costUsd: "1.5000" });
+
+  const roniCalls = await db.select().from(schema.calls).where(eq(schema.calls.tenantId, roni.tenant.id));
+  const inCycle = roniCalls.filter((c) => c.vapiCallId !== "call_old" && c.costUsd != null);
+  const sum = (rows: typeof roniCalls) => rows.reduce((a, c) => a + Number(c.costUsd), 0);
+  const expectedTotal = sum(inCycle);
+  const near = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) < 1e-6, `${msg}: ${a} != ${b}`);
+  const roniDetail = await admin.tenantDetail("1001");
+  const c = roniDetail.cost;
+  assert.equal(roniDetail.costPeriod.kind, "cycle");
+  near(c.totalUsd, expectedTotal, "סך הכול");
+  near(c.llmUsd, 0.2, "מודל");
+  near(c.ttsUsd, 0.1, "קול");
+  near(c.sttUsd, 0.06, "תמלול");
+  near(c.transportUsd, 0.05, "טלפוניה");
+  near(c.vapiUsd, 0.05, "Vapi");
+  near(c.analysisUsd, 0.03, "ניתוח");
+  near(c.otherUsd, expectedTotal - 0.49, "שיחות בלי פירוט נספרות כלא מפורט");
+  near(c.testUsd, sum(inCycle.filter((r) => r.type === "test")), "שיחות ניסיון");
+  assert.equal(c.pricedCalls, inCycle.length);
+  assert.ok(inCycle.some((r) => r.vapiCallId === "call_out_noanswer"), "שיחה שלא נענתה נספרת בעלות");
+  near(roniDetail.previousCostUsd!, 1.5, "התקופה הקודמת");
+  assert.equal(roniDetail.recentCalls.find((r) => r.costUsd === "0.5000")?.type, "inbound");
+  const roniCostRow = (await admin.listTenantsOverview()).find((r) => r.tenant.externalCustomerId === "1001")!;
+  near(roniCostRow.costUsd, expectedTotal, "הרשימה מראה את אותו סכום");
+  await db.delete(schema.calls).where(eq(schema.calls.vapiCallId, "call_old"));
+
+  // לקוח בלי חבילה: החודש הקלנדרי בשעון ישראל. דמו: מתחילת הדמו.
+  const { costPeriod, previousCostPeriod } = await import("../src/server/plan");
+  const novNoon = new Date("2026-11-07T09:00:00Z");
+  const noPlan = costPeriod({ ...roni.tenant, planStartedAt: null, planMinutes: null }, novNoon);
+  assert.equal(noPlan.kind, "month");
+  assert.equal(noPlan.from.toISOString(), "2026-10-31T22:00:00.000Z", "1 בנובמבר, חצות בישראל");
+  assert.equal(noPlan.to.toISOString(), "2026-11-30T22:00:00.000Z");
+  assert.equal(previousCostPeriod(noPlan)!.from.toISOString(), "2026-09-30T21:00:00.000Z", "1 באוקטובר, שעון קיץ");
+  ok("עלות: נשמרת מ-Vapi עם פירוט (מודל, קול, תמלול, טלפוניה, Vapi, ניתוח), באותו מחזור כמו הדקות, כולל שיחות שלא נענו. התקופה הקודמת נפרדת");
+
   // 8ג. עריכת הפרומפט: רק הודעת ה-system משתנה, שאר ה-model נשמר
   mock.assistants.get("asst_roni")!.model = {
     provider: "openai",
@@ -530,6 +586,24 @@ async function main() {
     if (demoPage.plan.type === "demo") assert.equal(demoPage.plan.remainingSeconds, 10);
   }
   ok("דמו: יוצא מה-assistant המשותף, מוגבל ל-300 שניות. אחרי 290 שניות נשארו 10, ושיחה נוספת נחסמת");
+
+  // 9ב. עלות של דמו: השיחות רצות על ה-assistant המשותף, והעלות הסופית מגיעה מ-Vapi אחרי הסיום
+  const demoVapiCall = mock.calls.get(demoCall.vapiCallId!)!;
+  mock.calls.set(demoCall.vapiCallId!, {
+    ...demoVapiCall,
+    cost: 0.42,
+    costBreakdown: { llm: 0.2, tts: 0.12, stt: 0.04, transport: 0.03, vapi: 0.03, total: 0.42 },
+    updatedAt: new Date().toISOString(),
+  });
+  // שיחה אחרת על ה-assistant המשותף, שלא נוצרה מהדשבורד: לא נכנסת
+  mock.calls.set("call_demo_other", { id: "call_demo_other", type: "inboundPhoneCall", status: "ended", assistantId: "asst_demo", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), cost: 9 });
+  const demoDetail = await admin.tenantDetail(demo.tenant.id);
+  assert.equal(demoDetail.costPeriod.kind, "demo");
+  near(demoDetail.cost.totalUsd, 0.42, "העלות הסופית של הדמו");
+  near(demoDetail.cost.ttsUsd, 0.12, "קול בדמו");
+  assert.equal(demoDetail.previousCostUsd, null);
+  assert.equal((await db.select().from(schema.calls).where(eq(schema.calls.vapiCallId, "call_demo_other"))).length, 0);
+  ok("עלות דמו: מתעדכנת מ-Vapi גם אחרי שהשיחה הסתיימה. שיחות זרות על ה-assistant המשותף לא נכנסות");
 
   // 10. עדכון בדמו לא נוגע ב-Vapi
   mock.requests.length = 0;

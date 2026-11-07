@@ -23,3 +23,16 @@ export function fmtSeconds(seconds: number | null | undefined): string {
   const s = seconds % 60;
   return m > 0 ? `${m}:${String(s).padStart(2, "0")} דק׳` : `${s} שנ׳`;
 }
+
+/** דולרים: $12.34. סכום קטן מסנט אבל לא אפס: "פחות מסנט". */
+export function fmtUsd(value: number | string | null | undefined): string {
+  if (value == null) return "—";
+  const n = Number(value);
+  if (n > 0 && n < 0.005) return "<$0.01";
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** אותו דבר עם שלוש ספרות, לעלות לדקה (למשל $0.135) */
+export function fmtUsdRate(value: number): string {
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
+}

@@ -13,7 +13,7 @@ import {
   setStatusAction,
   updatePlanAction,
 } from "../../actions";
-import { fmtDate, fmtDateTime, fmtSeconds, dateInputValue } from "../../format";
+import { fmtDate, fmtDateTime, fmtSeconds, fmtUsd, fmtUsdRate, dateInputValue } from "../../format";
 import { ActionForm, ConfirmButton, CopyLink, Field, inputCls } from "../../forms";
 import { AssistantSelect, PhoneNumberSelect, RefreshVapiLink, vapiOptions } from "../../vapi-options";
 
@@ -155,6 +155,8 @@ async function Detail({
         )}
       </div>
 
+      <CostSection detail={detail} />
+
       <Section title="קישורים">
         {links.length > 0 && (
           <div className="mb-4 overflow-x-auto">
@@ -243,16 +245,20 @@ async function Detail({
                   <th className="py-2 font-medium">סוג</th>
                   <th className="py-2 font-medium">מצב</th>
                   <th className="py-2 font-medium">משך</th>
+                  <th className="py-2 font-medium">עלות</th>
                   <th className="py-2 font-medium">מספר</th>
                 </tr>
               </thead>
               <tbody>
                 {recentCalls.map((call) => (
                   <tr key={call.id} className="border-b border-line last:border-0">
-                    <td className="py-2">{fmtDateTime(call.startedAt)}</td>
+                    <td className="py-2">{fmtDateTime(call.startedAt ?? call.createdAt)}</td>
                     <td className="py-2">{CALL_TYPE[call.type] ?? call.type}</td>
                     <td className="py-2">{CALL_STATUS[call.status] ?? call.status}</td>
                     <td className="py-2">{fmtSeconds(call.durationSeconds)}</td>
+                    <td className="py-2 tabular-nums">
+                      <bdi dir="ltr">{call.costUsd != null ? fmtUsd(call.costUsd) : "—"}</bdi>
+                    </td>
                     <td className="py-2">{call.customerNumber ? <bdi dir="ltr">{call.customerNumber}</bdi> : "—"}</td>
                   </tr>
                 ))}
@@ -262,6 +268,106 @@ async function Detail({
         )}
       </Section>
     </main>
+  );
+}
+
+const COST_PARTS = [
+  { key: "llmUsd", label: "מודל השפה", hint: "LLM: החשיבה והתשובות של הבוט" },
+  { key: "ttsUsd", label: "הקול", hint: "TTS: ElevenLabs, Cartesia וכו'" },
+  { key: "sttUsd", label: "תמלול", hint: "STT: הבנת מה שהמתקשר אומר" },
+  { key: "transportUsd", label: "טלפוניה", hint: "Twilio, Vonage או המספר של Vapi" },
+  { key: "vapiUsd", label: "Vapi", hint: "העמלה של Vapi עצמו" },
+  { key: "analysisUsd", label: "ניתוח אחרי השיחה", hint: "סיכום ונתונים שמופקים מהשיחה" },
+  { key: "otherUsd", label: "לא מפורט", hint: "שיחות מלפני ששמרנו פירוט, ועלויות קטנות אחרות" },
+] as const;
+
+function periodText(detail: TenantDetail): string {
+  const { kind, from, to } = detail.costPeriod;
+  if (kind === "demo") return "מתחילת הדמו";
+  if (kind === "month") {
+    return `ב${from.toLocaleDateString("he-IL", { month: "long", year: "numeric", timeZone: "Asia/Jerusalem" })}`;
+  }
+  return `במחזור הנוכחי (${fmtDate(from)} עד ${fmtDate(to)})`;
+}
+
+function CostSection({ detail }: { detail: TenantDetail }) {
+  const { cost, previousCostUsd } = detail;
+  const minutes = cost.seconds / 60;
+  const parts = COST_PARTS.map((p) => ({ ...p, value: cost[p.key] })).filter((p) => p.value >= 0.005);
+
+  return (
+    <Section title="עלות">
+      <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
+        <div>
+          <p className="text-3xl font-semibold tabular-nums" dir="ltr">
+            {fmtUsd(cost.totalUsd)}
+          </p>
+          <p className="text-sm text-ink-soft">{periodText(detail)}</p>
+        </div>
+        <dl className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+          <div>
+            <dt className="text-ink-soft">עלות לדקה</dt>
+            <dd className="font-medium tabular-nums" dir="ltr">
+              {minutes >= 1 ? fmtUsdRate(cost.totalUsd / minutes) : "—"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-ink-soft">שיחות</dt>
+            <dd className="font-medium tabular-nums">{cost.pricedCalls}</dd>
+          </div>
+          {cost.testUsd > 0 && detail.tenant.type !== "demo" && (
+            <div>
+              <dt className="text-ink-soft">מזה שיחות ניסיון</dt>
+              <dd className="font-medium tabular-nums" dir="ltr">
+                {fmtUsd(cost.testUsd)}
+              </dd>
+            </div>
+          )}
+          {previousCostUsd != null && (
+            <div>
+              <dt className="text-ink-soft">בתקופה הקודמת</dt>
+              <dd className="font-medium tabular-nums" dir="ltr">
+                {fmtUsd(previousCostUsd)}
+              </dd>
+            </div>
+          )}
+        </dl>
+      </div>
+
+      {parts.length > 0 ? (
+        <div className="mt-5 overflow-x-auto">
+          <table className="w-full min-w-[420px] text-sm">
+            <thead>
+              <tr className="border-b border-line text-right text-ink-soft">
+                <th className="py-2 font-medium">על מה</th>
+                <th className="py-2 font-medium">סכום</th>
+                <th className="py-2 font-medium">מתוך הכול</th>
+              </tr>
+            </thead>
+            <tbody>
+              {parts.map((p) => (
+                <tr key={p.key} className="border-b border-line last:border-0">
+                  <td className="py-2">
+                    {p.label} <span className="text-xs text-ink-soft">{p.hint}</span>
+                  </td>
+                  <td className="py-2 tabular-nums">
+                    <bdi dir="ltr">{fmtUsd(p.value)}</bdi>
+                  </td>
+                  <td className="py-2 tabular-nums">{Math.round((p.value / cost.totalUsd) * 100)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="mt-4 text-sm text-ink-soft">עוד אין שיחות עם מחיר בתקופה הזו.</p>
+      )}
+
+      <p className="mt-4 text-xs text-ink-soft">
+        הסכומים הם מה ש-Vapi מדווח על כל שיחה, בדולרים, כולל שיחות ניסיון ושיחות שלא נענו. ספק שמחובר ב-Vapi עם
+        מפתח משלך (למשל ElevenLabs, או מספר Twilio משלך) עשוי לחייב אותך ישירות, ואז החלק שלו לא נכלל כאן.
+      </p>
+    </Section>
   );
 }
 

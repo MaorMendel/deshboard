@@ -1,5 +1,6 @@
 // לקוח קטן ל-API של Vapi. השמות והשדות כאן לפי ה-OpenAPI הרשמי (https://api.vapi.ai/api-json).
 
+import type { CallCostBreakdown } from "@/db/schema";
 import { config } from "./config";
 
 export type VapiVoice = { provider: string; voiceId: string; [key: string]: unknown };
@@ -58,6 +59,7 @@ export interface VapiCall {
   startedAt?: string;
   endedAt?: string;
   cost?: number;
+  costBreakdown?: CallCostBreakdown;
   endedReason?: string;
 }
 

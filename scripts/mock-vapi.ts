@@ -102,7 +102,17 @@ export async function startMockVapi(key: string, options: MockOptions = {}): Pro
           }, 3000);
           setTimeout(() => {
             const c = state.calls.get(id);
-            if (c) state.calls.set(id, { ...c, status: "ended", endedAt: new Date().toISOString(), cost: 0.05, endedReason: "customer-ended-call", updatedAt: new Date().toISOString() });
+            if (c) {
+              state.calls.set(id, {
+                ...c,
+                status: "ended",
+                endedAt: new Date().toISOString(),
+                cost: 0.05,
+                costBreakdown: { llm: 0.02, tts: 0.01, stt: 0.008, transport: 0.007, vapi: 0.005, total: 0.05 },
+                endedReason: "customer-ended-call",
+                updatedAt: new Date().toISOString(),
+              });
+            }
           }, 3000 + options.autoEndCallsAfterMs);
         }
         return send(201, call);
@@ -133,7 +143,7 @@ export async function startMockVapi(key: string, options: MockOptions = {}): Pro
 }
 
 /** מסמן שיחה כמסתיימת אחרי מספר שניות */
-export function endCall(mock: MockVapi, id: string, seconds: number, cost = 0.1) {
+export function endCall(mock: MockVapi, id: string, seconds: number, cost = 0.1, costBreakdown?: VapiCall["costBreakdown"]) {
   const c = mock.calls.get(id);
   if (!c) throw new Error(`no call ${id}`);
   const start = new Date(Date.now() - seconds * 1000 - 5000);
@@ -143,6 +153,7 @@ export function endCall(mock: MockVapi, id: string, seconds: number, cost = 0.1)
     startedAt: start.toISOString(),
     endedAt: new Date(start.getTime() + seconds * 1000).toISOString(),
     cost,
+    costBreakdown,
     endedReason: "customer-ended-call",
     updatedAt: new Date().toISOString(),
   });

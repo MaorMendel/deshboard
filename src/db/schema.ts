@@ -176,6 +176,37 @@ export const accessLinks = pgTable(
 
 // ---------- calls: כל שיחה, אמיתית או ניסיון. מכאן המערכת הראשית מקבלת את הדקות. ----------
 
+/**
+ * הפירוט של העלות כפי ש-Vapi מחזיר אותו (Call.costBreakdown), בדולרים.
+ * נשמר כמו שהוא, כדי שאפשר יהיה להציג בפאנל כמה הלך על כל רכיב.
+ */
+export interface CallCostBreakdown {
+  /** טלפוניה: Twilio, Vonage וכו' */
+  transport?: number;
+  /** תמלול הדיבור (speech-to-text) */
+  stt?: number;
+  /** מודל השפה */
+  llm?: number;
+  /** הקול (text-to-speech) */
+  tts?: number;
+  /** העמלה של Vapi עצמו */
+  vapi?: number;
+  chat?: number;
+  total?: number;
+  llmPromptTokens?: number;
+  llmCompletionTokens?: number;
+  llmCachedPromptTokens?: number;
+  ttsCharacters?: number;
+  /** ניתוח אחרי השיחה: סיכום, נתונים מובנים, הערכת הצלחה */
+  analysisCostBreakdown?: {
+    summary?: number;
+    structuredData?: number;
+    successEvaluation?: number;
+    structuredOutput?: number;
+    [key: string]: number | undefined;
+  };
+}
+
 export const calls = pgTable(
   "calls",
   {
@@ -201,6 +232,8 @@ export const calls = pgTable(
     durationSeconds: integer("duration_seconds"),
     /** מה ש-Vapi חייב אותך על השיחה */
     costUsd: numeric("cost_usd", { precision: 10, scale: 4 }),
+    /** על מה הלך הכסף: מודל, קול, תמלול, טלפוניה, Vapi */
+    costBreakdown: jsonb("cost_breakdown").$type<CallCostBreakdown>(),
     endedReason: text("ended_reason"),
 
     summary: text("summary"),
