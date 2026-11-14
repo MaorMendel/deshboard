@@ -10,8 +10,8 @@ import { accessLinks, auditLog, botVersions, tenants, voices, type Tenant } from
 import type { BotSettings, CustomerVersion } from "@/lib/types";
 import { describeChanges } from "@/lib/version-diff";
 import { normalizeSettings } from "@/lib/validation";
-import { withCurrentStyle } from "@/lib/conversation-style";
-import { adjustVoice, presetsForTenant, timingFields } from "./conversation-style";
+import { withCurrentStyle, withoutClosed } from "@/lib/conversation-style";
+import { adjustVoice, featuresForTenant, presetsForTenant, timingFields } from "./conversation-style";
 import { ServiceError } from "./errors";
 import { buildVoice, firstMessageFields, modelWithPrompt, promptFromModel } from "./vapi";
 import { isVapiConfigured, vapi, VapiError, type AssistantFields } from "./vapi-client";
@@ -145,10 +145,16 @@ export async function restoreVersion(tenant: Tenant, versionId: string) {
     : [];
 
   // נקרא לפני הטרנזקציה, כדי לא לפתוח שאילתה נוספת באמצעה
-  const presets = (await presetsForTenant(tenant.id)).effective;
+  const [presets, features] = await Promise.all([
+    presetsForTenant(tenant.id).then((p) => p.effective),
+    featuresForTenant(tenant.id),
+  ]);
 
   const created = await db.transaction(async (tx) => {
-    let settings = normalizeSettings(withCurrentStyle(target.settings, current?.settings ?? null));
+    // אפשרות שסגורה ללקוח לא חוזרת גם בשחזור: הדשבורד לא מנהל אותה אצלו
+    let settings = normalizeSettings(
+      withoutClosed(withCurrentStyle(target.settings, current?.settings ?? null), features),
+    );
     let payload: Record<string, unknown> | null = null;
 
     if (isCustomer) {

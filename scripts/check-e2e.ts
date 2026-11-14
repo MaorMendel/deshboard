@@ -460,15 +460,51 @@ async function main() {
     startSpeakingPlan: { smartEndpointingPlan: { provider: "livekit" }, customEndpointingRules: [customRule] },
   });
   const okAccess = async () => (await findAccess(roniKey)) as Extract<Awaited<ReturnType<typeof findAccess>>, { state: "ok" }>;
-  const stylePage = await getBotPageData(await okAccess());
-  assert.equal(stylePage.settings.responseStyle, null, "לא בחר, והערכים ב-Vapi לא תואמים לאף קצב");
-  assert.equal(stylePage.settings.speechRate, 0);
-  assert.equal(stylePage.settings.backgroundSound, "office", "בלי ערך ב-Vapi: office, כמו ברירת המחדל שלו");
   const putStyle = (body: Record<string, unknown>) =>
     putBotRoute(
       new Request("https://x", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
       keyCtx(roniKey),
     );
+
+  // ברירת המחדל: הכול סגור. הדף לא מקבל את האפשרויות, והשרת מתעלם מהן גם אם נשלחות
+  const closedPage = await getBotPageData(await okAccess());
+  assert.deepEqual(closedPage.features, { responseStyle: false, speechRate: false, volume: false, backgroundSound: false });
+  assert.equal(closedPage.settings.responseStyle, undefined, "סגור: לא מגיע לדף");
+  assert.equal(closedPage.settings.speechRate, undefined);
+  mock.requests.length = 0;
+  const closedRes = await putStyle({
+    ...closedPage.settings,
+    responseStyle: "fast",
+    speechRate: 2,
+    volume: -2,
+    backgroundSound: "off",
+    baseline: closedPage.settings,
+  });
+  assert.equal(closedRes.status, 200);
+  const closedPatch = mock.requests.find((r) => r.method === "PATCH")?.body as Record<string, unknown> | undefined;
+  assert.ok(
+    !closedPatch || (closedPatch.startSpeakingPlan === undefined && closedPatch.voice === undefined && closedPatch.backgroundSound === undefined),
+    "שום דבר מסגנון השיחה לא נשלח ל-Vapi",
+  );
+  const [closedVersion] = await db
+    .select()
+    .from(schema.botVersions)
+    .where(eq(schema.botVersions.id, (await admin.findTenant("1001")).currentVersionId!));
+  assert.equal(closedVersion.settings.responseStyle, undefined, "וגם לא נשמר בגרסה");
+  assert.equal(closedVersion.settings.speechRate, undefined);
+  // האדמין פותח ללקוח הזה
+  await respAdmin.updateFeatures(await admin.findTenant("1001"), {
+    responseStyle: true,
+    speechRate: true,
+    volume: true,
+    backgroundSound: true,
+  });
+  assert.equal((await getBotPageData(await okAccess())).features.responseStyle, true);
+
+  const stylePage = await getBotPageData(await okAccess());
+  assert.equal(stylePage.settings.responseStyle, null, "לא בחר, והערכים ב-Vapi לא תואמים לאף קצב");
+  assert.equal(stylePage.settings.speechRate, 0);
+  assert.equal(stylePage.settings.backgroundSound, "office", "בלי ערך ב-Vapi: office, כמו ברירת המחדל שלו");
 
   mock.requests.length = 0;
   const styleRes = await putStyle({
@@ -598,6 +634,43 @@ async function main() {
   for (const t of await db.select().from(schema.calls).where(and(eq(schema.calls.tenantId, roni.tenant.id), eq(schema.calls.type, "test")))) {
     if (t.vapiCallId && t.status !== "ended") endCall(mock, t.vapiCallId, 5);
   }
+  // סגירה אחרי שימוש: מה שב-Vapi נשאר, הדף כבר לא מציג, ושינוי כללי לא נוגע בו
+  const roniBeforeClose = JSON.stringify(mock.assistants.get("asst_roni"));
+  await respAdmin.updateFeatures(await admin.findTenant("1001"), {
+    responseStyle: false,
+    speechRate: false,
+    volume: true,
+    backgroundSound: true,
+  });
+  assert.equal(JSON.stringify(mock.assistants.get("asst_roni")), roniBeforeClose, "סגירה לא משנה כלום ב-Vapi");
+  const afterClose = await respAdmin.updateGlobalPresets({ fast: { ...D.fast, waitSeconds: 0.12 }, patient: { ...D.patient, waitSeconds: 0.45 } });
+  assert.ok(!afterClose.updated.includes("מספרת רוני"), "קצב המענה סגור אצלו");
+  await respAdmin.updateGlobalPresets(D);
+  const closedAgain = await getBotPageData(await okAccess());
+  assert.equal(closedAgain.settings.responseStyle, undefined);
+  assert.equal(closedAgain.settings.backgroundSound !== undefined, true, "רקע עדיין פתוח");
+
+  // זיהוי קצב הדיבור: רק התאמה מדויקת. מהירות ששונתה ידנית ב-Vapi מוצגת כ"רגיל"
+  await respAdmin.updateFeatures(await admin.findTenant("1001"), {
+    responseStyle: true,
+    speechRate: true,
+    volume: true,
+    backgroundSound: true,
+  });
+  const exactPage = await getBotPageData(await okAccess());
+  const [exactVoiceRow] = await db.select().from(schema.voices).where(eq(schema.voices.id, exactPage.settings.voiceId));
+  const manual = styleMod.adjustVoice(buildVoice(exactVoiceRow), 0, 0);
+  const manualVoice =
+    manual.provider === "cartesia"
+      ? { ...manual, generationConfig: { ...((manual.generationConfig as object) ?? {}), speed: 1.03 } }
+      : { ...manual, speed: 1.03 };
+  mock.assistants.set("asst_roni", { ...mock.assistants.get("asst_roni")!, voice: manualVoice });
+  assert.equal((await getBotPageData(await okAccess())).settings.speechRate, 0, "1.03 לא תואם לאף דרגה");
+  mock.assistants.set("asst_roni", {
+    ...mock.assistants.get("asst_roni")!,
+    voice: styleMod.adjustVoice(buildVoice(exactVoiceRow), -1, 0),
+  });
+  assert.equal((await getBotPageData(await okAccess())).settings.speechRate, -1, "ערך שתואם בדיוק לדרגה");
   ok("סגנון השיחה: הלקוח בוחר מהיר/סבלני, קצב דיבור, עוצמה ורקע. השרת מתרגם למספרים (בקשה מזויפת נדחית או מתעלמים ממנה), כותב לשדה התמלול הנכון לכל ספק, כולל ערכים כלליים וערכים ללקוח");
 
   // 10ב. הלקוח עורך את ההנחיות מהדף שלו

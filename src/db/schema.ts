@@ -204,6 +204,18 @@ export const responsePresets = pgTable("response_presets", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * אילו אפשרויות של סגנון השיחה פתוחות לכל לקוח (קצב מענה, קצב דיבור, עוצמה, רקע).
+ * לקוח בלי שורה כאן: הכול סגור. טבלה נפרדת, כדי שבלי המיגרציה שום דבר אחר לא יישבר.
+ */
+export const customerFeatures = pgTable("customer_features", {
+  tenantId: uuid("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  features: jsonb("features").$type<Record<string, boolean>>().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ---------- sync_state: עד איפה השיחות מסונכרנות מ-Vapi ----------
 
 /**

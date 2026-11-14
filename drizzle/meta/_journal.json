@@ -57,6 +57,13 @@
       "when": 1794664343596,
       "tag": "0007_response_presets",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794673225980,
+      "tag": "0008_customer_features",
+      "breakpoints": true
     }
   ]
 }

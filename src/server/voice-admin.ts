@@ -9,7 +9,7 @@ import { getDb } from "@/db";
 import { auditLog, botVersions, tenants, voices, type VoiceRow } from "@/db/schema";
 import { isVoiceProvider, PROVIDERS, type VoiceProvider } from "@/lib/voice-providers";
 import { ServiceError } from "./errors";
-import { adjustVoice } from "./conversation-style";
+import { adjustVoice, featuresByTenant } from "./conversation-style";
 import { buildVoice } from "./vapi";
 import { isVapiConfigured, vapi, VapiError } from "./vapi-client";
 import { slugFor } from "./voice-catalog";
@@ -309,6 +309,7 @@ export async function applyVoiceToAssistants(id: string): Promise<{ updated: str
     .leftJoin(botVersions, eq(botVersions.id, tenants.currentVersionId))
     .where(and(eq(tenants.type, "customer"), isNotNull(tenants.vapiAssistantId)));
 
+  const features = await featuresByTenant();
   const updated: string[] = [];
   const failed: string[] = [];
   // אחד אחרי השני, כדי לא להיתקל במגבלת הקצב של Vapi
@@ -318,8 +319,14 @@ export async function applyVoiceToAssistants(id: string): Promise<{ updated: str
       const live = assistant.voice;
       if (live?.provider !== voice.provider || String(live.voiceId) !== voice.providerVoiceId) continue;
       // קצב הדיבור והעוצמה שהלקוח בחר נשמרים מעל ההגדרות החדשות של הקול
+      // (רק אם האפשרויות האלה פתוחות ללקוח)
+      const open = features.get(t.id);
       await vapi.updateAssistant(t.assistantId!, {
-        voice: adjustVoice(buildVoice(voice, live), t.settings?.speechRate, t.settings?.volume),
+        voice: adjustVoice(
+          buildVoice(voice, live),
+          open?.speechRate ? t.settings?.speechRate : undefined,
+          open?.volume ? t.settings?.volume : undefined,
+        ),
       });
       updated.push(t.name);
     } catch (err) {

@@ -8,6 +8,7 @@ import { ActionBar, formatDuration, type Notice } from "./ActionBar";
 import { CallFlow } from "./CallFlow";
 import { ComingSoon } from "./ComingSoon";
 import { UsageCard } from "./UsageCard";
+import { cn } from "./cn";
 import { VersionsPanel } from "./VersionsPanel";
 import {
   BackgroundPicker,
@@ -16,7 +17,7 @@ import {
   StepSlider,
   VOLUME_LABELS,
 } from "./ConversationStyle";
-import { withCurrentStyle } from "@/lib/conversation-style";
+import { NO_FEATURES, withCurrentStyle, withoutClosed } from "@/lib/conversation-style";
 import { VoicePicker } from "./VoicePicker";
 
 type Busy = null | "update" | "test";
@@ -40,6 +41,7 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
   const dirty = !sameSettings(published, draft);
   const voiceIds = useMemo(() => voices.map((v) => v.id), [voices]);
   const selectedVoice = voices.find((v) => v.id === draft.voiceId) ?? voices[0];
+  const features = initialData.features ?? NO_FEATURES;
 
   // אזהרה לפני יציאה מהדף עם שינויים שלא עודכנו
   useEffect(() => {
@@ -129,7 +131,7 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
     const voiceAvailable = voiceIds.includes(v.settings.voiceId);
     const next: BotSettings = {
       // גרסה ישנה בלי סגנון שיחה: נשאר מה שעל המסך
-      ...withCurrentStyle(v.settings, draft),
+      ...withoutClosed(withCurrentStyle(v.settings, draft), features),
       voiceId: voiceAvailable ? v.settings.voiceId : draft.voiceId,
       prompt: v.settings.prompt?.trim() ? v.settings.prompt : draft.prompt,
     };
@@ -202,9 +204,7 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
             <h2 id="flow-title" className="text-xl font-semibold">
               מהלך השיחה
             </h2>
-            <p className="mt-1 max-w-prose text-ink-soft">
-              מה הבוט אומר מהרגע שהוא עונה ועד שהשיחה נגמרת.
-            </p>
+            <p className="mt-1 max-w-prose text-ink-soft">מה הבוט אומר מהרגע שהוא עונה ועד שהשיחה נגמרת.</p>
             <div className="mt-6">
               <CallFlow
                 settings={draft}
@@ -230,37 +230,50 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
                 onSelect={(id) => change("voiceId", id)}
               />
             </div>
-            <div className="mt-8 flex flex-col gap-6">
-              <StepSlider
-                id="speech-rate"
-                label="קצב דיבור"
-                labels={SPEECH_RATE_LABELS}
-                value={draft.speechRate}
-                onChange={(v) => change("speechRate", v)}
-              />
-              <StepSlider
-                id="volume"
-                label="עוצמת קול"
-                labels={VOLUME_LABELS}
-                value={selectedVoice?.supportsVolume ? draft.volume : 0}
-                onChange={(v) => change("volume", v)}
-                disabledNote={
-                  selectedVoice?.supportsVolume ? undefined : "בקול הזה אי אפשר לשנות עוצמה. בקולות אחרים ברשימה אפשר."
-                }
-              />
+            <div className={cn("mt-8 flex flex-col gap-6", !features.speechRate && !features.volume && "hidden")}>
+              {features.speechRate && (
+                <StepSlider
+                  id="speech-rate"
+                  label="קצב דיבור"
+                  labels={SPEECH_RATE_LABELS}
+                  value={draft.speechRate}
+                  onChange={(v) => change("speechRate", v)}
+                />
+              )}
+              {features.volume && (
+                <StepSlider
+                  id="volume"
+                  label="עוצמת קול"
+                  labels={VOLUME_LABELS}
+                  value={selectedVoice?.supportsVolume ? draft.volume : 0}
+                  onChange={(v) => change("volume", v)}
+                  disabledNote={
+                    selectedVoice?.supportsVolume
+                      ? undefined
+                      : "בקול הזה אי אפשר לשנות עוצמה. בקולות אחרים ברשימה אפשר."
+                  }
+                />
+              )}
             </div>
           </section>
         </div>
 
-        <section aria-labelledby="style-title" className="mt-16">
-          <h2 id="style-title" className="text-xl font-semibold">
-            סגנון השיחה
-          </h2>
-          <div className="mt-6 grid gap-8 md:grid-cols-2">
-            <ResponseStylePicker value={draft.responseStyle} onChange={(v) => change("responseStyle", v)} />
-            <BackgroundPicker value={draft.backgroundSound} onChange={(v) => change("backgroundSound", v)} />
-          </div>
-        </section>
+        {/* רק מה שהאדמין פתח ללקוח הזה */}
+        {(features.responseStyle || features.backgroundSound) && (
+          <section aria-labelledby="style-title" className="mt-16">
+            <h2 id="style-title" className="text-xl font-semibold">
+              סגנון השיחה
+            </h2>
+            <div className="mt-6 grid gap-8 md:grid-cols-2">
+              {features.responseStyle && (
+                <ResponseStylePicker value={draft.responseStyle} onChange={(v) => change("responseStyle", v)} />
+              )}
+              {features.backgroundSound && (
+                <BackgroundPicker value={draft.backgroundSound} onChange={(v) => change("backgroundSound", v)} />
+              )}
+            </div>
+          </section>
+        )}
 
         <section aria-labelledby="versions-title" className="mt-16">
           <h2 id="versions-title" className="text-xl font-semibold">
@@ -283,10 +296,7 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
             בקרוב
           </h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <ComingSoon
-              title="השיחות שלכם"
-              description="מי התקשר, מה נאמר בשיחה וסיכום קצר של כל פנייה."
-            />
+            <ComingSoon title="השיחות שלכם" description="מי התקשר, מה נאמר בשיחה וסיכום קצר של כל פנייה." />
           </div>
         </section>
       </main>

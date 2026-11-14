@@ -21,7 +21,14 @@ import { config } from "@/server/config";
 import { isElevenLabsConfigured } from "@/server/elevenlabs-client";
 import { ServiceError } from "@/server/errors";
 import { restoreVersion } from "@/server/versions";
-import { presetsFromForm, updateGlobalPresets, updateTenantPresets, type ApplyResult } from "@/server/response-admin";
+import {
+  presetsFromForm,
+  updateFeatures,
+  updateGlobalPresets,
+  updateTenantPresets,
+  type ApplyResult,
+} from "@/server/response-admin";
+import { FEATURE_KEYS, type CustomerFeatures } from "@/lib/conversation-style";
 import type { TimingPresets } from "@/server/conversation-style";
 import { addVoice, applyVoiceToAssistants, generateSample, updateVoice, uploadSample } from "@/server/voice-admin";
 import { importVoicesFromVapi } from "@/server/voice-catalog";
@@ -214,6 +221,23 @@ function applyMessage(prefix: string, r: ApplyResult): ActionResult {
   if (r.notes.length) parts.push(`שים לב: ${r.notes.join(" ")}`);
   if (r.failed.length) return { error: `${parts.join(" ")} נכשלו: ${r.failed.join(", ")}. אפשר לשמור שוב, זה בטוח.` };
   return { ok: parts.join(" ") };
+}
+
+export async function saveFeaturesAction(tenantId: string, _prev: ActionResult, form: FormData): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const features = Object.fromEntries(FEATURE_KEYS.map((k) => [k, form.get(`feature.${k}`) === "on"])) as CustomerFeatures;
+    const saved = await updateFeatures(await findTenant(tenantId), features);
+    refresh(tenantId);
+    const open = FEATURE_KEYS.filter((k) => saved[k]).length;
+    return {
+      ok: open
+        ? `נשמר. ${open === FEATURE_KEYS.length ? "כל האפשרויות פתוחות" : `${open} אפשרויות פתוחות`} ללקוח. הן יופיעו בדף שלו בטעינה הבאה.`
+        : "נשמר. כל האפשרויות סגורות ללקוח.",
+    };
+  } catch (err) {
+    return failure(err);
+  }
 }
 
 export async function saveGlobalPresetsAction(_prev: ActionResult, form: FormData): Promise<ActionResult> {

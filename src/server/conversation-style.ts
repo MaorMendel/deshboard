@@ -3,8 +3,16 @@
 
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { responsePresets, type ResponseTiming, type VoiceRow } from "@/db/schema";
-import type { BackgroundSound, ResponseStyle, Step } from "@/lib/conversation-style";
+import { customerFeatures, responsePresets, type ResponseTiming, type VoiceRow } from "@/db/schema";
+import {
+  FEATURE_KEYS,
+  NO_FEATURES,
+  type BackgroundSound,
+  type CustomerFeatures,
+  type ResponseStyle,
+  type Step,
+} from "@/lib/conversation-style";
+import { buildVoice } from "./vapi";
 import type { BotSettings } from "@/lib/types";
 import { ServiceError } from "./errors";
 import type { VapiAssistant, VapiVoice } from "./vapi-client";
@@ -124,6 +132,43 @@ export async function saveTenantPresets(tenantId: string, presets: Partial<Timin
     .insert(responsePresets)
     .values({ scope: tenantId, ...value })
     .onConflictDoUpdate({ target: responsePresets.scope, set: { ...value, updatedAt: new Date() } });
+}
+
+// ---------- מה פתוח לכל לקוח ----------
+
+function toFeatures(raw: Record<string, boolean> | null | undefined): CustomerFeatures {
+  return Object.fromEntries(FEATURE_KEYS.map((k) => [k, raw?.[k] === true])) as CustomerFeatures;
+}
+
+/** מה פתוח ללקוח. בלי שורה (או בלי הטבלה, לפני מיגרציה 0008): הכול סגור. */
+export async function featuresForTenant(tenantId: string): Promise<CustomerFeatures> {
+  try {
+    const [row] = await getDb().select().from(customerFeatures).where(eq(customerFeatures.tenantId, tenantId));
+    return toFeatures(row?.features);
+  } catch (err) {
+    if (isMissingTable(err)) return { ...NO_FEATURES };
+    throw err;
+  }
+}
+
+/** של כל הלקוחות שיש להם משהו פתוח */
+export async function featuresByTenant(): Promise<Map<string, CustomerFeatures>> {
+  try {
+    const rows = await getDb().select().from(customerFeatures);
+    return new Map(rows.map((r) => [r.tenantId, toFeatures(r.features)]));
+  } catch (err) {
+    if (isMissingTable(err)) return new Map();
+    throw err;
+  }
+}
+
+export async function saveFeatures(tenantId: string, features: CustomerFeatures): Promise<CustomerFeatures> {
+  const value = toFeatures(features);
+  await getDb()
+    .insert(customerFeatures)
+    .values({ tenantId, features: value })
+    .onConflictDoUpdate({ target: customerFeatures.tenantId, set: { features: value, updatedAt: new Date() } });
+  return value;
 }
 
 // ---------- מבחירה לשדות של Vapi ----------
@@ -262,30 +307,39 @@ export function adjustVoice(voice: VapiVoice, rate: Step | undefined, volume: St
   return voice;
 }
 
-/** הדרגה הקרובה ביותר ליחס בין הקול החי לבסיס בקטלוג. כך הדף מראה מה שבאמת מוגדר ב-Vapi. */
-function nearestStep(ratio: number, factors: Record<Step, number>): Step {
-  let best: Step = 0;
-  for (const s of [-2, -1, 0, 1, 2] as const) {
-    if (Math.abs(factors[s] - ratio) < Math.abs(factors[best] - ratio)) best = s;
-  }
-  return best;
+const speedOf = (v: VapiVoice) =>
+  v.provider === "cartesia" ? num((v.generationConfig as Cfg | undefined)?.speed, 1) : num(v.speed, 1);
+const volumeOf = (v: VapiVoice) => num((v.generationConfig as Cfg | undefined)?.volume, 1);
+
+/** הדרגות שנותנות בדיוק את הערך שיש ב-Vapi (כמה דרגות יכולות להיחתך לאותו ערך) */
+function matchingSteps(live: number, at: (s: Step) => number): Step[] {
+  return ([0, -1, 1, -2, 2] as const).filter((s) => Math.abs(at(s) - live) < 0.005);
 }
 
-export function stepsFromVoice(live: VapiVoice | undefined, catalog: VoiceRow | null): { speechRate: Step; volume: Step } {
+function pick(candidates: Step[], saved: Step | undefined): Step {
+  if (saved !== undefined && candidates.includes(saved)) return saved;
+  return candidates[0] ?? 0;
+}
+
+/**
+ * איזו דרגה מוגדרת עכשיו ב-Vapi, לפי הקול בקטלוג. רק התאמה מדויקת נחשבת: אם המהירות שונתה ידנית
+ * ב-Vapi לערך שלא מתאים לאף דרגה, מוצג "רגיל" (0), וכלום לא נשלח עד שהלקוח בוחר בעצמו.
+ * saved: מה שנשמר בפעם האחרונה, כשכמה דרגות נותנות אותו ערך (למשל שתיהן נחתכו למקסימום).
+ */
+export function stepsFromVoice(
+  live: VapiVoice | undefined,
+  catalog: VoiceRow | null,
+  saved?: { speechRate?: Step; volume?: Step } | null,
+): { speechRate: Step; volume: Step } {
   if (!live || !catalog?.providerConfig || live.provider !== catalog.provider) return { speechRate: 0, volume: 0 };
-  const base = catalog.providerConfig as Cfg;
-  if (live.provider === "11labs") {
-    return { speechRate: nearestStep(num(live.speed, 1) / num(base.speed, 1), SPEED_FACTOR), volume: 0 };
-  }
-  if (live.provider === "cartesia") {
-    const lg = (live.generationConfig as Cfg | undefined) ?? {};
-    const bg = (base.generationConfig as Cfg | undefined) ?? {};
-    return {
-      speechRate: nearestStep(num(lg.speed, 1) / num(bg.speed, 1), SPEED_FACTOR),
-      volume: nearestStep(num(lg.volume, 1) / num(bg.volume, 1), VOLUME_FACTOR),
-    };
-  }
-  return { speechRate: 0, volume: 0 };
+  if (live.provider !== "11labs" && live.provider !== "cartesia") return { speechRate: 0, volume: 0 };
+  const base = buildVoice(catalog);
+  const speechRate = pick(matchingSteps(speedOf(live), (s) => speedOf(adjustVoice(base, s, 0))), saved?.speechRate);
+  const volume =
+    live.provider === "cartesia"
+      ? pick(matchingSteps(volumeOf(live), (s) => volumeOf(adjustVoice(base, 0, s))), saved?.volume)
+      : 0;
+  return { speechRate, volume };
 }
 
 /** האם השתנה משהו שמשפיע על הקול שנשלח */

@@ -29,6 +29,7 @@ import { findCatalogVoice, selectableVoices, toPublicVoice } from "./voice-catal
 import {
   adjustVoice,
   backgroundFromAssistant,
+  featuresForTenant,
   presetsForTenant,
   stepsFromVoice,
   styleFromAssistant,
@@ -36,7 +37,7 @@ import {
   timingFields,
   voiceAdjustmentsChanged,
 } from "./conversation-style";
-import { isBackgroundSound, isResponseStyle, isStep } from "@/lib/conversation-style";
+import { isBackgroundSound, isResponseStyle, isStep, NO_FEATURES, withoutClosed } from "@/lib/conversation-style";
 import { customerVersions } from "./versions";
 
 /** פחות מזה לא שווה להתחיל שיחת דמו */
@@ -154,19 +155,20 @@ export async function getBotPageData({ tenant }: Access): Promise<BotPageData> {
   const savedSettings = version?.settings ? { prompt: "", ...version.settings } : null;
   const voiceId = liveVoice?.id ?? savedSettings?.voiceId;
 
-  const [voiceRows, plan, presets] = await Promise.all([
+  const [voiceRows, plan, presets, features] = await Promise.all([
     selectableVoices(voiceId),
     planInfo(tenant),
     assistant ? presetsForTenant(tenant.id).catch(() => null) : null,
+    featuresForTenant(tenant.id).catch(() => ({ ...NO_FEATURES })),
   ]);
-  const settings: BotSettings = assistant
+  const allSettings: BotSettings = assistant
     ? {
         ...settingsFromAssistant(assistant, voiceId ?? voiceRows[0]?.id ?? ""),
         // סגנון השיחה, כמו שהוא באמת מוגדר ב-Vapi. קצב מענה שלא תואם לאף אחד מהשניים:
         // מה שהלקוח בחר בפעם האחרונה, ואם לא בחר, בלי בחירה.
         responseStyle:
           (presets ? styleFromAssistant(assistant, presets.effective) : null) ?? savedSettings?.responseStyle ?? null,
-        ...stepsFromVoice(assistant.voice, liveVoice),
+        ...stepsFromVoice(assistant.voice, liveVoice, savedSettings),
         backgroundSound: backgroundFromAssistant(assistant),
       }
     : {
@@ -176,6 +178,8 @@ export async function getBotPageData({ tenant }: Access): Promise<BotPageData> {
         backgroundSound: "office",
         ...(savedSettings ?? defaultSettings(voiceRows, tenant.name)),
       };
+  // מה שסגור ללקוח לא מגיע לדף בכלל
+  const settings = withoutClosed(allSettings, features);
 
   return {
     business: { name: tenant.name, botPhoneDisplay: tenant.botPhoneDisplay },
@@ -185,6 +189,7 @@ export async function getBotPageData({ tenant }: Access): Promise<BotPageData> {
     plan,
     testPhoneMasked: tenant.verifiedPhone ? maskPhone(tenant.verifiedPhone) : null,
     promptMax: customerPromptLimit((settings.prompt ?? "").trim().length),
+    features,
   };
 }
 
@@ -249,7 +254,9 @@ export async function updateBot(
   restoredFromVersion?: number,
 ): Promise<UpdateResult> {
   const { tenant, linkId } = await requireAccess(key);
-  const { settings, voice } = await validateForTenant(tenant, input);
+  const validated = await validateForTenant(tenant, input);
+  let settings = validated.settings;
+  const voice = validated.voice;
   const previous = (await currentVersion(tenant))?.settings ?? null;
 
   const isCustomer = tenant.type === "customer";
@@ -261,6 +268,10 @@ export async function updateBot(
   }
 
   // נקרא לפני הטרנזקציה: שאילתה מחוץ לטרנזקציה פתוחה תופסת עוד חיבור (ובחיבור יחיד, נתקעת)
+  // מה שהאדמין לא פתח ללקוח: השרת מתעלם ממנו, גם אם נשלח. לא מגיע ל-Vapi ולא נשמר בגרסה.
+  const features = await featuresForTenant(tenant.id);
+  settings = withoutClosed(settings, features);
+  if (baseline) baseline = withoutClosed(baseline, features);
   const presets = settings.responseStyle ? (await presetsForTenant(tenant.id)).effective : null;
 
   const db = getDb();
@@ -366,7 +377,10 @@ export async function updateBot(
 /** "נסה את הבוט": מתקשר לטלפון המאומת עם ההגדרות שעל המסך, בלי לשנות את הבוט החי */
 export async function startTestCall(key: string, input: BotSettings, meta: RequestMeta): Promise<TestCallResult> {
   const { tenant, linkId } = await requireAccess(key);
-  const { settings, voice } = await validateForTenant(tenant, input);
+  const validated = await validateForTenant(tenant, input);
+  const voice = validated.voice;
+  // מה שסגור ללקוח לא חל גם על שיחת הניסיון
+  const settings = withoutClosed(validated.settings, await featuresForTenant(tenant.id));
 
   if (!tenant.verifiedPhone) {
     throw new ServiceError("not_configured", "עוד לא הוגדר מספר טלפון לשיחות ניסיון. כדאי לפנות אלינו.");

@@ -113,6 +113,9 @@ async function main() {
       costBreakdown: { ...parts, total, analysisCostBreakdown: { summary: 0.004 } },
     });
   }
+  // סגנון השיחה פתוח למספרה, וסגור לדמו, כדי לראות את שני המצבים
+  const { saveFeatures } = await import("../src/server/conversation-style");
+  await saveFeatures(customer.tenant.id, { responseStyle: true, speechRate: true, volume: true, backgroundSound: true });
   const { syncTenantCalls } = await import("../src/server/call-sync");
   await syncTenantCalls(customer.tenant, new Date(Date.now() - 30 * DAY));
 

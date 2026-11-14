@@ -3,10 +3,13 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { auditLog, botVersions, tenants, type Tenant } from "@/db/schema";
-import type { ResponseStyle } from "@/lib/conversation-style";
+import type { CustomerFeatures, ResponseStyle } from "@/lib/conversation-style";
 import { ServiceError } from "./errors";
 import {
+  featuresByTenant,
+  featuresForTenant,
   presetsForTenant,
+  saveFeatures,
   saveGlobalPresets,
   saveTenantPresets,
   tenantOverrides,
@@ -34,6 +37,7 @@ async function applyToTenants(opts: {
   const result: ApplyResult = { updated: [], failed: [], notes: [] };
   if (!isVapiConfigured()) return result;
 
+  const features = await featuresByTenant();
   const rows = await getDb()
     .select({ id: tenants.id, name: tenants.name, assistantId: tenants.vapiAssistantId, settings: botVersions.settings })
     .from(tenants)
@@ -43,7 +47,8 @@ async function applyToTenants(opts: {
   // אחד אחרי השני, כדי לא להיתקל במגבלת הקצב של Vapi
   for (const t of rows) {
     const style = t.settings.responseStyle;
-    if (!style) continue;
+    // לקוח שלא בחר, או שקצב המענה סגור אצלו: לא נוגעים
+    if (!style || !features.get(t.id)?.responseStyle) continue;
     if (opts.only && !opts.only.includes(t.id)) continue;
     if (opts.skip?.(t.id, style)) continue;
     try {
@@ -140,4 +145,17 @@ export function presetsFromForm(form: FormData, styles: ResponseStyle[] = ["fast
     };
   }
   return out;
+}
+
+/**
+ * מה פתוח ללקוח בדף שלו. סגירה לא משנה כלום ב-Vapi: מה שכבר הוגדר שם נשאר,
+ * פשוט הלקוח כבר לא רואה את האפשרות והשרת מתעלם ממנה.
+ */
+export async function updateFeatures(tenant: Tenant, features: CustomerFeatures): Promise<CustomerFeatures> {
+  const before = await featuresForTenant(tenant.id);
+  const saved = await saveFeatures(tenant.id, features);
+  await getDb()
+    .insert(auditLog)
+    .values({ tenantId: tenant.id, actorType: "admin", action: "features.update", before, after: saved });
+  return saved;
 }

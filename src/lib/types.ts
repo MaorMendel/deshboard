@@ -1,4 +1,4 @@
-import type { BackgroundSound, ResponseStyle, Step } from "./conversation-style";
+import type { BackgroundSound, CustomerFeatures, ResponseStyle, Step } from "./conversation-style";
 
 // החוזה בין הדפדפן לשרת. הקומפוננטות מכירות רק את הטיפוסים האלה,
 // ולא יודעות שום דבר על Vapi או על ספקי הקול.
@@ -69,6 +69,8 @@ export interface BotPageData {
   testPhoneMasked: string | null;
   /** כמה תווים מותר בהנחיות. השרת בודק את אותה מגבלה. */
   promptMax: number;
+  /** אילו מאפשרויות סגנון השיחה האדמין פתח ללקוח הזה */
+  features: CustomerFeatures;
 }
 
 /** גרסה קודמת כפי שהלקוח רואה אותה בדף שלו */
