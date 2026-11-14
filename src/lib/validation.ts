@@ -9,7 +9,7 @@ export const PROMPT_MAX = 20_000;
  * המגבלה ללקוח. הנחיות ארוכות נשלחות למודל בכל תור בשיחה, ולכן מייקרות כל דקה.
  * לקוח שכבר יש לו הנחיות ארוכות יותר (כי אדמין כתב אותן) יכול להמשיך לערוך אותן, אבל לא להאריך מעבר לזה.
  */
-export const CUSTOMER_PROMPT_MAX = 8_000;
+export const CUSTOMER_PROMPT_MAX = 16_000;
 
 /** כמה תווים מותר ללקוח, לפי אורך ההנחיות שיש לבוט שלו עכשיו */
 export function customerPromptLimit(currentLength: number): number {
