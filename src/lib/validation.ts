@@ -66,6 +66,11 @@ export function normalizeSettings(settings: BotSettings): BotSettings {
     openingMessage: settings.openingMessage.trim(),
     closingMessage: settings.closingMessage.trim(),
     prompt: (settings.prompt ?? "").trim(),
+    // סגנון השיחה: רק מה שהוגדר. חסר = לא נוגעים (גרסאות ישנות, דפדפן עם גרסה קודמת של הדף)
+    ...(settings.responseStyle !== undefined ? { responseStyle: settings.responseStyle } : {}),
+    ...(settings.speechRate !== undefined ? { speechRate: settings.speechRate } : {}),
+    ...(settings.volume !== undefined ? { volume: settings.volume } : {}),
+    ...(settings.backgroundSound !== undefined ? { backgroundSound: settings.backgroundSound } : {}),
   };
 }
 
@@ -75,6 +80,10 @@ export function sameSettings(a: BotSettings, b: BotSettings): boolean {
     a.firstSpeaker === b.firstSpeaker &&
     a.openingMessage.trim() === b.openingMessage.trim() &&
     a.closingMessage.trim() === b.closingMessage.trim() &&
-    (a.prompt ?? "").trim() === (b.prompt ?? "").trim()
+    (a.prompt ?? "").trim() === (b.prompt ?? "").trim() &&
+    (a.responseStyle ?? null) === (b.responseStyle ?? null) &&
+    (a.speechRate ?? 0) === (b.speechRate ?? 0) &&
+    (a.volume ?? 0) === (b.volume ?? 0) &&
+    (a.backgroundSound ?? "office") === (b.backgroundSound ?? "office")
   );
 }

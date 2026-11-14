@@ -26,10 +26,32 @@ import {
 } from "./vapi";
 import { isVapiConfigured, vapi, VapiError, type AssistantFields } from "./vapi-client";
 import { findCatalogVoice, selectableVoices, toPublicVoice } from "./voice-catalog";
+import {
+  adjustVoice,
+  backgroundFromAssistant,
+  presetsForTenant,
+  stepsFromVoice,
+  styleFromAssistant,
+  supportsVolume,
+  timingFields,
+  voiceAdjustmentsChanged,
+} from "./conversation-style";
+import { isBackgroundSound, isResponseStyle, isStep } from "@/lib/conversation-style";
 import { customerVersions } from "./versions";
 
 /** פחות מזה לא שווה להתחיל שיחת דמו */
 const MIN_DEMO_CALL_SECONDS = 15;
+
+/**
+ * שדה אופציונלי של סגנון השיחה: חסר = undefined (לא נוגעים), קיים = חייב להיות אחת האפשרויות.
+ * מספרים חופשיים לא מתקבלים בכלל: הלקוח שולח בחירה, והשרת קובע מה נשלח ל-Vapi.
+ */
+function choice<T>(value: unknown, guard: (v: unknown) => v is T, allowNull = false): T | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null && allowNull) return null;
+  if (!guard(value)) throw new ServiceError("validation", "הבקשה לא תקינה.");
+  return value;
+}
 
 /** הדפדפן שולח JSON חופשי. מוודאים שזו באמת צורה של BotSettings לפני כל דבר אחר. */
 export function parseSettings(input: unknown): BotSettings {
@@ -49,7 +71,17 @@ export function parseSettings(input: unknown): BotSettings {
     openingMessage: o.openingMessage,
     closingMessage: o.closingMessage,
     prompt: typeof o.prompt === "string" ? o.prompt : "",
+    ...defined({
+      responseStyle: choice(o.responseStyle, isResponseStyle, true),
+      speechRate: choice(o.speechRate, isStep) ?? undefined,
+      volume: choice(o.volume, isStep) ?? undefined,
+      backgroundSound: choice(o.backgroundSound, isBackgroundSound) ?? undefined,
+    }),
   };
+}
+
+function defined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 async function currentVersion(tenant: Tenant) {
@@ -122,10 +154,28 @@ export async function getBotPageData({ tenant }: Access): Promise<BotPageData> {
   const savedSettings = version?.settings ? { prompt: "", ...version.settings } : null;
   const voiceId = liveVoice?.id ?? savedSettings?.voiceId;
 
-  const [voiceRows, plan] = await Promise.all([selectableVoices(voiceId), planInfo(tenant)]);
-  const settings = assistant
-    ? settingsFromAssistant(assistant, voiceId ?? voiceRows[0]?.id ?? "")
-    : (savedSettings ?? defaultSettings(voiceRows, tenant.name));
+  const [voiceRows, plan, presets] = await Promise.all([
+    selectableVoices(voiceId),
+    planInfo(tenant),
+    assistant ? presetsForTenant(tenant.id).catch(() => null) : null,
+  ]);
+  const settings: BotSettings = assistant
+    ? {
+        ...settingsFromAssistant(assistant, voiceId ?? voiceRows[0]?.id ?? ""),
+        // סגנון השיחה, כמו שהוא באמת מוגדר ב-Vapi. קצב מענה שלא תואם לאף אחד מהשניים:
+        // מה שהלקוח בחר בפעם האחרונה, ואם לא בחר, בלי בחירה.
+        responseStyle:
+          (presets ? styleFromAssistant(assistant, presets.effective) : null) ?? savedSettings?.responseStyle ?? null,
+        ...stepsFromVoice(assistant.voice, liveVoice),
+        backgroundSound: backgroundFromAssistant(assistant),
+      }
+    : {
+        responseStyle: null,
+        speechRate: 0,
+        volume: 0,
+        backgroundSound: "office",
+        ...(savedSettings ?? defaultSettings(voiceRows, tenant.name)),
+      };
 
   return {
     business: { name: tenant.name, botPhoneDisplay: tenant.botPhoneDisplay },
@@ -168,7 +218,12 @@ async function validateForTenant(tenant: Tenant, input: BotSettings): Promise<{ 
   if (hasErrors(errors)) {
     throw new ServiceError("validation", "יש שדות שצריך לתקן לפני שממשיכים.", errors);
   }
-  return { settings, voice: allowed.find((v) => v.id === settings.voiceId)! };
+  const voice = allowed.find((v) => v.id === settings.voiceId)!;
+  // עוצמה לקול שלא תומך בה לא משנה כלום. שומרים 0, כדי שההיסטוריה לא תראה שינוי שלא קרה.
+  if (settings.volume && !supportsVolume(voice.provider, voice.providerConfig as Record<string, unknown> | null)) {
+    settings.volume = 0;
+  }
+  return { settings, voice };
 }
 
 function vapiFailure(err: unknown, message: string): never {
@@ -205,6 +260,9 @@ export async function updateBot(
     throw new ServiceError("not_configured", "החיבור ל-Vapi לא מוגדר בשרת.");
   }
 
+  // נקרא לפני הטרנזקציה: שאילתה מחוץ לטרנזקציה פתוחה תופסת עוד חיבור (ובחיבור יחיד, נתקעת)
+  const presets = settings.responseStyle ? (await presetsForTenant(tenant.id)).effective : null;
+
   const db = getDb();
   const created = await db.transaction(async (tx) => {
     const [{ next }] = await tx
@@ -223,14 +281,29 @@ export async function updateBot(
         const closingChanged = !base || settings.closingMessage !== base.closingMessage;
         // הנחיות ריקות לא מוחקות את מה שיש ב-Vapi
         const promptChanged = prompt !== "" && (!base || prompt !== (base.prompt ?? ""));
+        // סגנון השיחה: רק מה שהלקוח באמת בחר ושינה. בלי בחירה (null) לא נוגעים במה שמוגדר ב-Vapi.
+        const adjustChanged = voiceAdjustmentsChanged(settings, base);
+        const style = settings.responseStyle ?? null;
+        const styleChanged = style !== null && (!base || style !== (base.responseStyle ?? null));
+        const background = settings.backgroundSound;
+        const backgroundChanged = background !== undefined && (!base || background !== (base.backgroundSound ?? "office"));
 
-        // ה-assistant נחוץ כשצריך להשלים כיוונוני קול, וכשעורכים את ההנחיות (כדי לא לדרוס את שאר ה-model).
+        // ה-assistant נחוץ כשצריך להשלים כיוונוני קול, כשעורכים את ההנחיות (כדי לא לדרוס את שאר ה-model),
+        // וכשמשנים קצב מענה (כדי לא לדרוס את שאר הגדרות התמלול ו-startSpeakingPlan).
         // כאן קוראים תמיד טרי, בלי זיכרון: מה שנקרא נשלח בחזרה, ותשובה ישנה תדרוס שינוי שנעשה ב-Vapi.
-        const needsAssistant = (voiceChanged && !voice.providerConfig) || promptChanged;
+        const needsAssistant = ((voiceChanged || adjustChanged) && !voice.providerConfig) || promptChanged || styleChanged;
         const assistant = needsAssistant ? await vapi.getAssistant(tenant.vapiAssistantId!) : null;
 
         const fields: AssistantFields = {};
-        if (voiceChanged) fields.voice = buildVoice(voice, assistant?.voice);
+        if (voiceChanged || adjustChanged) {
+          fields.voice = adjustVoice(buildVoice(voice, assistant?.voice), settings.speechRate, settings.volume);
+        }
+        if (styleChanged && presets) {
+          const timing = timingFields(assistant, presets[style]);
+          fields.startSpeakingPlan = timing.startSpeakingPlan;
+          if (timing.transcriber) fields.transcriber = timing.transcriber;
+        }
+        if (backgroundChanged) fields.backgroundSound = background;
         if (firstMessageChanged) Object.assign(fields, firstMessageFields(settings));
         if (closingChanged) fields.endCallMessage = settings.closingMessage;
         if (promptChanged && assistant?.model) fields.model = modelWithPrompt(assistant.model, prompt);
@@ -342,10 +415,21 @@ export async function startTestCall(key: string, input: BotSettings, meta: Reque
   }
 
   try {
-    // ה-assistant נחוץ כשצריך להשלים כיוונוני קול, וכשיש הנחיות על המסך
+    // ה-assistant נחוץ כשצריך להשלים כיוונוני קול, כשיש הנחיות על המסך, וכשנבחר קצב מענה
     const prompt = (settings.prompt ?? "").trim();
-    const assistant = !voice.providerConfig || prompt ? await vapi.getAssistant(assistantId) : null;
-    const overrides = toAssistantFields(settings, buildVoice(voice, assistant?.voice));
+    const style = settings.responseStyle ?? null;
+    const assistant = !voice.providerConfig || prompt || style ? await vapi.getAssistant(assistantId) : null;
+    const overrides = toAssistantFields(
+      settings,
+      adjustVoice(buildVoice(voice, assistant?.voice), settings.speechRate, settings.volume),
+    );
+    // סגנון השיחה שעל המסך חל על שיחת הניסיון, בלי לשנות את הבוט
+    if (style) {
+      const timing = timingFields(assistant, (await presetsForTenant(tenant.id)).effective[style]);
+      overrides.startSpeakingPlan = timing.startSpeakingPlan;
+      if (timing.transcriber) overrides.transcriber = timing.transcriber;
+    }
+    if (settings.backgroundSound) overrides.backgroundSound = settings.backgroundSound;
     if (demoRemaining !== null) overrides.maxDurationSeconds = demoRemaining;
     // ההנחיות שעל המסך חלות על שיחת הניסיון בלבד, דרך override של ה-model
     if (prompt && assistant?.model) overrides.model = modelWithPrompt(assistant.model, prompt);

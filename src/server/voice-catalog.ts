@@ -5,6 +5,7 @@ import type { Voice } from "@/lib/types";
 import { getDb } from "@/db";
 import { voices, type VoiceRow } from "@/db/schema";
 import { cartesia } from "./cartesia-client";
+import { supportsVolume } from "./conversation-style";
 import { vapi, type VapiVoice } from "./vapi-client";
 
 /** קולות לדוגמה, ל-seed של סביבת פיתוח בלבד. בפרודקשן הקולות מיובאים מ-Vapi. */
@@ -25,6 +26,7 @@ export function toPublicVoice(v: VoiceRow): Voice {
     description: v.description,
     sampleUrl: v.sampleUrl,
     tier: v.tier,
+    supportsVolume: supportsVolume(v.provider, v.providerConfig as Record<string, unknown> | null),
   };
 }
 

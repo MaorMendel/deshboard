@@ -1,5 +1,6 @@
 // מה השתנה בין שתי גרסאות של בוט, במילים. משמש את היסטוריית הגרסאות בפאנל.
 
+import { BACKGROUND_LABELS, RESPONSE_STYLES, SPEECH_RATE_LABELS, VOLUME_LABELS } from "./conversation-style";
 import type { BotSettings } from "./types";
 
 const SPEAKER = { bot: "הבוט", caller: "המתקשר" } as const;
@@ -42,6 +43,20 @@ export function describeChanges(
       const delta = b.length - a.length;
       changes.push(delta === 0 ? "הנחיות" : `הנחיות (${delta > 0 ? "+" : "−"}${Math.abs(delta).toLocaleString("he-IL")} תווים)`);
     }
+  }
+
+  // סגנון השיחה: גרסה שלא שמרה אותו לא אומרת שהוא השתנה
+  if (next.responseStyle && next.responseStyle !== prev.responseStyle) {
+    changes.push(`קצב מענה: ${RESPONSE_STYLES[next.responseStyle].title}`);
+  }
+  if (next.speechRate !== undefined && next.speechRate !== (prev.speechRate ?? 0)) {
+    changes.push(`קצב דיבור: ${SPEECH_RATE_LABELS[next.speechRate]}`);
+  }
+  if (next.volume !== undefined && next.volume !== (prev.volume ?? 0)) {
+    changes.push(`עוצמה: ${VOLUME_LABELS[next.volume]}`);
+  }
+  if (next.backgroundSound && next.backgroundSound !== (prev.backgroundSound ?? "office")) {
+    changes.push(`רקע: ${BACKGROUND_LABELS[next.backgroundSound]}`);
   }
   return changes.length ? changes : ["בלי שינוי"];
 }

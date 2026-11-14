@@ -52,6 +52,7 @@ async function main() {
     firstMessage: "שלום, הגעתם למספרת רוני, מדברת נועה. איך אפשר לעזור?",
     firstMessageMode: "assistant-speaks-first",
     endCallMessage: "תודה שהתקשרתם למספרת רוני, יום טוב!",
+    transcriber: { provider: "deepgram", model: "nova-3", language: "he" },
     model: {
       provider: "openai",
       model: "gpt-4o",

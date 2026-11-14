@@ -237,7 +237,8 @@ async function main() {
   await syncTenantCalls(roni.tenant, from);
   assert.equal(askedSince(), new Date(syncedBefore.getTime() - 10 * 60_000).toISOString(), "רק מהסנכרון הקודם, עם 10 דקות חפיפה");
   // תקופה מוקדמת ממה שכבר מכוסה: מושכים הכול ממנה
-  const olderFrom = new Date(from.getTime() - 7 * 86_400_000);
+  // תאריך קבוע וישן: כל תאריך יחסי עלול להיות כבר מכוסה (למשל אחרי ה-1 בחודש, כשעמוד הלקוח סונכרן מתחילת החודש)
+  const olderFrom = new Date("2020-01-01T00:00:00.000Z");
   mock.requests.length = 0;
   await syncTenantCalls(roni.tenant, olderFrom);
   assert.equal(askedSince(), olderFrom.toISOString());
@@ -446,6 +447,158 @@ async function main() {
   assert.equal(afterBogus[0].restoredFrom, null);
   assert.equal((await getVersions(new Request("https://x"), keyCtx("not-a-real-key"))).status, 401);
   ok("הלקוח רואה את הגרסאות שלו (בלי פרטים פנימיים), חוזר לגרסה דרך העדכון הרגיל (עם כל הבדיקות), וההיסטוריה רושמת \"חזרה לגרסה\"");
+
+  // 8ג4. סגנון השיחה: קצב מענה, קצב דיבור, עוצמה ורעשי רקע. הלקוח שולח בחירה, השרת קובע את המספרים.
+  const styleMod = await import("../src/server/conversation-style");
+  const respAdmin = await import("../src/server/response-admin");
+  const { buildVoice } = await import("../src/server/vapi");
+  const D = styleMod.DEFAULT_PRESETS;
+  const customRule = { type: "assistant", regex: "כן", timeoutSeconds: 2 };
+  mock.assistants.set("asst_roni", {
+    ...mock.assistants.get("asst_roni")!,
+    transcriber: { provider: "deepgram", model: "nova-3", language: "he" },
+    startSpeakingPlan: { smartEndpointingPlan: { provider: "livekit" }, customEndpointingRules: [customRule] },
+  });
+  const okAccess = async () => (await findAccess(roniKey)) as Extract<Awaited<ReturnType<typeof findAccess>>, { state: "ok" }>;
+  const stylePage = await getBotPageData(await okAccess());
+  assert.equal(stylePage.settings.responseStyle, null, "לא בחר, והערכים ב-Vapi לא תואמים לאף קצב");
+  assert.equal(stylePage.settings.speechRate, 0);
+  assert.equal(stylePage.settings.backgroundSound, "office", "בלי ערך ב-Vapi: office, כמו ברירת המחדל שלו");
+  const putStyle = (body: Record<string, unknown>) =>
+    putBotRoute(
+      new Request("https://x", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+      keyCtx(roniKey),
+    );
+
+  mock.requests.length = 0;
+  const styleRes = await putStyle({
+    ...stylePage.settings,
+    responseStyle: "fast",
+    speechRate: 1,
+    backgroundSound: "off",
+    baseline: stylePage.settings,
+    // מזויפים: מספרים חופשיים לא מתקבלים
+    waitSeconds: 0,
+    startSpeakingPlan: { waitSeconds: 0 },
+    transcriber: { provider: "deepgram", endpointing: 10 },
+  });
+  assert.equal(styleRes.status, 200);
+  const stylePatch = mock.requests.find((r) => r.method === "PATCH")!.body as Record<string, unknown>;
+  assert.deepEqual(stylePatch.startSpeakingPlan, {
+    customEndpointingRules: [customRule],
+    waitSeconds: D.fast.waitSeconds,
+    smartEndpointingEnabled: false,
+    transcriptionEndpointingPlan: {
+      onPunctuationSeconds: D.fast.onPunctuationSeconds,
+      onNoPunctuationSeconds: D.fast.onNoPunctuationSeconds,
+      onNumberSeconds: D.fast.onNumberSeconds,
+    },
+  }, "Smart Endpointing נכבה, כללים מותאמים נשמרים, והערכים מהשרת");
+  assert.deepEqual(stylePatch.transcriber, { provider: "deepgram", model: "nova-3", language: "he", endpointing: 250 });
+  assert.equal(stylePatch.backgroundSound, "off");
+  const [currentVoiceRow] = await db.select().from(schema.voices).where(eq(schema.voices.id, stylePage.settings.voiceId));
+  assert.deepEqual(stylePatch.voice, styleMod.adjustVoice(buildVoice(currentVoiceRow), 1, 0), "קצב דיבור מעל הבסיס של הקול");
+  assert.notDeepEqual(stylePatch.voice, buildVoice(currentVoiceRow));
+  for (const bad of [{ responseStyle: "turbo" }, { speechRate: 7 }, { speechRate: "1" }, { volume: 1.5 }, { backgroundSound: "https://x/a.mp3" }]) {
+    assert.equal((await putStyle({ ...stylePage.settings, ...bad, baseline: stylePage.settings })).status, 400, JSON.stringify(bad));
+  }
+  const afterStyle = await getBotPageData(await okAccess());
+  assert.equal(afterStyle.settings.responseStyle, "fast", "נקרא מ-Vapi: תואם לערכים של מהיר");
+  assert.equal(afterStyle.settings.speechRate, 1);
+  assert.equal(afterStyle.settings.backgroundSound, "off");
+
+  // סבלני עם Deepgram: End-of-Turn נחתך ל-500ms, המקסימום של Deepgram
+  const patientTiming = styleMod.timingFields(mock.assistants.get("asst_roni")!, D.patient);
+  assert.equal(patientTiming.transcriber!.endpointing, 500);
+  assert.ok(patientTiming.notes.some((n) => n.includes("500")));
+  // ספקים אחרים: כל אחד בשדה וביחידות שלו, ספק בלי שדה כזה לא נוגעים בו
+  const tf = (transcriber: Record<string, unknown>) => styleMod.timingFields({ id: "x", transcriber }, D.fast);
+  assert.equal(tf({ provider: "azure" }).transcriber!.segmentationSilenceTimeoutMs, 250);
+  assert.equal(tf({ provider: "gladia" }).transcriber!.endpointing, 0.25);
+  assert.equal(tf({ provider: "11labs" }).transcriber!.silenceThresholdSeconds, 0.3, "המינימום של ElevenLabs");
+  assert.equal(tf({ provider: "soniox" }).transcriber!.maxEndpointDelayMs, 500, "המינימום של Soniox");
+  assert.equal(tf({ provider: "google" }).transcriber, undefined);
+  assert.equal(tf({ provider: "deepgram", model: "flux-general-en" }).transcriber, undefined);
+
+  // הערכים הכלליים: שינוי חל על מי שבחר קצב
+  const roniT = await admin.findTenant("1001");
+  let presetApply = await respAdmin.updateGlobalPresets({ fast: { ...D.fast, waitSeconds: 0.2 }, patient: D.patient });
+  assert.ok(presetApply.updated.includes("מספרת רוני"));
+  assert.equal((mock.assistants.get("asst_roni")!.startSpeakingPlan as { waitSeconds: number }).waitSeconds, 0.2);
+  // ערכים משלו ללקוח: גוברים, ושינוי כללי אחר כך לא נוגע בו
+  await respAdmin.updateTenantPresets(roniT, { fast: { ...D.fast, waitSeconds: 0.05 } });
+  assert.equal((mock.assistants.get("asst_roni")!.startSpeakingPlan as { waitSeconds: number }).waitSeconds, 0.05);
+  presetApply = await respAdmin.updateGlobalPresets({ fast: { ...D.fast, waitSeconds: 0.3 }, patient: D.patient });
+  assert.ok(!presetApply.updated.includes("מספרת רוני"), "יש לו ערכים משלו למהיר");
+  assert.equal((mock.assistants.get("asst_roni")!.startSpeakingPlan as { waitSeconds: number }).waitSeconds, 0.05);
+  assert.equal((await getBotPageData(await okAccess())).settings.responseStyle, "fast", "מזוהה לפי הערכים שלו");
+  await respAdmin.updateTenantPresets(roniT, null);
+  assert.equal((mock.assistants.get("asst_roni")!.startSpeakingPlan as { waitSeconds: number }).waitSeconds, 0.3, "חזר לכלליים");
+  await expectError("validation", () => respAdmin.updateGlobalPresets({ fast: { ...D.fast, waitSeconds: 9 }, patient: D.patient }));
+  await respAdmin.updateGlobalPresets(D);
+
+  // עוצמה לקול שלא תומך בה (ElevenLabs): לא נשלחת ונשמרת כ-0
+  const [elVoice] = await db
+    .insert(schema.voices)
+    .values({
+      id: "el-volume-test",
+      name: "קול ElevenLabs",
+      gender: "female",
+      description: "בדיקה",
+      provider: "11labs",
+      providerVoiceId: "el_volume_test",
+      providerConfig: { provider: "11labs", voiceId: "el_volume_test", model: "eleven_v3" },
+      isActive: true,
+    })
+    .returning();
+  const volPage = await getBotPageData(await okAccess());
+  mock.requests.length = 0;
+  assert.equal((await putStyle({ ...volPage.settings, voiceId: elVoice.id, volume: 2, baseline: volPage.settings })).status, 200);
+  const volPatch = mock.requests.find((r) => r.method === "PATCH")!.body as { voice: Record<string, unknown> };
+  assert.equal(volPatch.voice.volume, undefined);
+  const [volVersion] = await db.select().from(schema.botVersions).where(eq(schema.botVersions.id, (await admin.findTenant("1001")).currentVersionId!));
+  assert.equal(volVersion.settings.volume, 0);
+
+  // היסטוריה: השינויים מתוארים, וחזרה לגרסה ישנה בלי סגנון שומרת את הבחירות הנוכחיות
+  const styleHist = await versionsMod.listVersions(await admin.findTenant("1001"));
+  const styleChanges = styleHist.versions.flatMap((v, i) =>
+    describeChanges(styleHist.versions[i + 1]?.settings ?? null, v.settings, (id) => styleHist.voiceNames[id] ?? id),
+  );
+  assert.ok(styleChanges.includes("קצב מענה: מענה מהיר וזורם"));
+  assert.ok(styleChanges.includes("קצב דיבור: מהיר"));
+  assert.ok(styleChanges.includes("רקע: בלי רעשים"));
+  mock.requests.length = 0;
+  await versionsMod.restoreVersion(await admin.findTenant("1001"), styleHist.versions.at(-1)!.id);
+  const oldRestore = mock.requests.find((r) => r.method === "PATCH")!.body as Record<string, unknown>;
+  assert.equal(oldRestore.backgroundSound, "off", "גרסה 1 לא שמרה רקע: נשאר מה שיש");
+  assert.equal((oldRestore.startSpeakingPlan as { waitSeconds: number }).waitSeconds, D.fast.waitSeconds, "וגם קצב המענה");
+  // שיחת ניסיון: הסגנון שעל המסך חל רק עליה, בלי לשנות את הבוט
+  const { POST: postTestCallRoute } = await import("../src/app/api/b/[key]/test-call/route");
+  const openStyleTests = await db.select().from(schema.calls).where(and(eq(schema.calls.tenantId, roni.tenant.id), eq(schema.calls.type, "test")));
+  for (const t of openStyleTests) if (t.vapiCallId && t.status !== "ended") endCall(mock, t.vapiCallId, 5);
+  const beforeTestPlan = JSON.stringify(mock.assistants.get("asst_roni")!.startSpeakingPlan);
+  const tcPage = await getBotPageData(await okAccess());
+  mock.requests.length = 0;
+  const tcStyleRes = await postTestCallRoute(
+    new Request("https://x", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...tcPage.settings, responseStyle: "patient", backgroundSound: "office" }),
+    }),
+    keyCtx(roniKey),
+  );
+  assert.equal(tcStyleRes.status, 200);
+  const tcBody = mock.requests.find((r) => r.method === "POST" && r.path === "/call")!.body as {
+    assistantOverrides: Record<string, Record<string, unknown> | string>;
+  };
+  assert.equal((tcBody.assistantOverrides.startSpeakingPlan as Record<string, unknown>).waitSeconds, D.patient.waitSeconds);
+  assert.equal((tcBody.assistantOverrides.transcriber as Record<string, unknown>).endpointing, 500);
+  assert.equal(tcBody.assistantOverrides.backgroundSound, "office");
+  assert.equal(JSON.stringify(mock.assistants.get("asst_roni")!.startSpeakingPlan), beforeTestPlan, "הבוט החי לא השתנה");
+  for (const t of await db.select().from(schema.calls).where(and(eq(schema.calls.tenantId, roni.tenant.id), eq(schema.calls.type, "test")))) {
+    if (t.vapiCallId && t.status !== "ended") endCall(mock, t.vapiCallId, 5);
+  }
+  ok("סגנון השיחה: הלקוח בוחר מהיר/סבלני, קצב דיבור, עוצמה ורקע. השרת מתרגם למספרים (בקשה מזויפת נדחית או מתעלמים ממנה), כותב לשדה התמלול הנכון לכל ספק, כולל ערכים כלליים וערכים ללקוח");
 
   // 10ב. הלקוח עורך את ההנחיות מהדף שלו
   const roniAccessPrompt = await findAccess(roniKey);

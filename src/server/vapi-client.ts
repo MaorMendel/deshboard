@@ -35,6 +35,12 @@ export interface VapiAssistant {
   firstMessageMode?: "assistant-speaks-first" | "assistant-speaks-first-with-model-generated-message" | "assistant-waits-for-user";
   endCallMessage?: string;
   maxDurationSeconds?: number;
+  /** מתי הבוט מתחיל לדבר: waitSeconds, transcriptionEndpointingPlan, smart endpointing */
+  startSpeakingPlan?: Record<string, unknown>;
+  /** ספק התמלול והגדרותיו (provider, model, endpointing וכו') */
+  transcriber?: Record<string, unknown>;
+  /** "off", "office", או כתובת של קובץ שמע */
+  backgroundSound?: string;
 }
 
 export type VapiCallStatus =
@@ -71,6 +77,10 @@ export interface AssistantFields {
   maxDurationSeconds?: number;
   /** נשלח רק כשהלקוח ערך את ההנחיות, תמיד כאובייקט מלא (ראו modelWithPrompt) */
   model?: VapiModel;
+  /** קצב מענה. תמיד כאובייקטים מלאים (ראו timingFields) */
+  startSpeakingPlan?: Record<string, unknown>;
+  transcriber?: Record<string, unknown>;
+  backgroundSound?: string;
 }
 
 export interface CreateCallInput {

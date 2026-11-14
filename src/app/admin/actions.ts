@@ -21,6 +21,8 @@ import { config } from "@/server/config";
 import { isElevenLabsConfigured } from "@/server/elevenlabs-client";
 import { ServiceError } from "@/server/errors";
 import { restoreVersion } from "@/server/versions";
+import { presetsFromForm, updateGlobalPresets, updateTenantPresets, type ApplyResult } from "@/server/response-admin";
+import type { TimingPresets } from "@/server/conversation-style";
 import { addVoice, applyVoiceToAssistants, generateSample, updateVoice, uploadSample } from "@/server/voice-admin";
 import { importVoicesFromVapi } from "@/server/voice-catalog";
 
@@ -197,6 +199,42 @@ export async function restoreVersionAction(tenantId: string, versionId: string):
         `ההגדרות של גרסה ${result.restoredFrom} חזרו, כגרסה ${result.version}. אפשר לבטל את זה באותה דרך.` +
         (result.voiceInactive ? " הקול של הגרסה הזו כבוי בקטלוג, כך שלקוחות אחרים לא יכולים לבחור בו." : ""),
     };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+// ---------- קצב מענה ----------
+
+function applyMessage(prefix: string, r: ApplyResult): ActionResult {
+  const parts = [prefix];
+  parts.push(
+    r.updated.length ? `עודכנו ב-Vapi: ${r.updated.join(", ")}.` : "אין לקוחות שבחרו קצב ושצריך לעדכן אצלם ב-Vapi.",
+  );
+  if (r.notes.length) parts.push(`שים לב: ${r.notes.join(" ")}`);
+  if (r.failed.length) return { error: `${parts.join(" ")} נכשלו: ${r.failed.join(", ")}. אפשר לשמור שוב, זה בטוח.` };
+  return { ok: parts.join(" ") };
+}
+
+export async function saveGlobalPresetsAction(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const result = await updateGlobalPresets(presetsFromForm(form) as TimingPresets);
+    revalidatePath("/admin/response");
+    return applyMessage("נשמר.", result);
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function saveTenantPresetsAction(tenantId: string, _prev: ActionResult, form: FormData): Promise<ActionResult> {
+  await requireAdmin();
+  try {
+    const styles = (["fast", "patient"] as const).filter((s) => form.get(`${s}.custom`) === "on");
+    const tenant = await findTenant(tenantId);
+    const result = await updateTenantPresets(tenant, styles.length ? presetsFromForm(form, [...styles]) : null);
+    refresh(tenantId);
+    return applyMessage(styles.length ? "נשמרו ערכים משלו ללקוח." : "הלקוח חזר לערכים הכלליים.", result);
   } catch (err) {
     return failure(err);
   }

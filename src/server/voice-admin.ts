@@ -9,6 +9,7 @@ import { getDb } from "@/db";
 import { auditLog, botVersions, tenants, voices, type VoiceRow } from "@/db/schema";
 import { isVoiceProvider, PROVIDERS, type VoiceProvider } from "@/lib/voice-providers";
 import { ServiceError } from "./errors";
+import { adjustVoice } from "./conversation-style";
 import { buildVoice } from "./vapi";
 import { isVapiConfigured, vapi, VapiError } from "./vapi-client";
 import { slugFor } from "./voice-catalog";
@@ -303,8 +304,9 @@ export async function applyVoiceToAssistants(id: string): Promise<{ updated: str
   if (!voice.providerConfig) throw new ServiceError("validation", "לקול הזה אין הגדרות שמורות, ואין מה להחיל.");
 
   const customers = await getDb()
-    .select({ id: tenants.id, name: tenants.name, assistantId: tenants.vapiAssistantId })
+    .select({ id: tenants.id, name: tenants.name, assistantId: tenants.vapiAssistantId, settings: botVersions.settings })
     .from(tenants)
+    .leftJoin(botVersions, eq(botVersions.id, tenants.currentVersionId))
     .where(and(eq(tenants.type, "customer"), isNotNull(tenants.vapiAssistantId)));
 
   const updated: string[] = [];
@@ -315,7 +317,10 @@ export async function applyVoiceToAssistants(id: string): Promise<{ updated: str
       const assistant = await vapi.getAssistant(t.assistantId!);
       const live = assistant.voice;
       if (live?.provider !== voice.provider || String(live.voiceId) !== voice.providerVoiceId) continue;
-      await vapi.updateAssistant(t.assistantId!, { voice: buildVoice(voice, live) });
+      // קצב הדיבור והעוצמה שהלקוח בחר נשמרים מעל ההגדרות החדשות של הקול
+      await vapi.updateAssistant(t.assistantId!, {
+        voice: adjustVoice(buildVoice(voice, live), t.settings?.speechRate, t.settings?.volume),
+      });
       updated.push(t.name);
     } catch (err) {
       if (!(err instanceof VapiError)) throw err;

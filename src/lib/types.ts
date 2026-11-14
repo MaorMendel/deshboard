@@ -1,3 +1,5 @@
+import type { BackgroundSound, ResponseStyle, Step } from "./conversation-style";
+
 // החוזה בין הדפדפן לשרת. הקומפוננטות מכירות רק את הטיפוסים האלה,
 // ולא יודעות שום דבר על Vapi או על ספקי הקול.
 
@@ -15,6 +17,16 @@ export interface BotSettings {
    * לא קיים בגרסאות ישנות, ולכן אופציונלי.
    */
   prompt?: string;
+  /**
+   * סגנון השיחה. כולם אופציונליים: גרסאות ישנות לא שמרו אותם, ו-undefined/null = לא נוגעים במה שיש ב-Vapi.
+   * קצב מענה: null = הלקוח עוד לא בחר, והבוט עובד עם מה שמוגדר בו.
+   */
+  responseStyle?: ResponseStyle | null;
+  /** קצב דיבור, יחסית לקול כפי שהוגדר בקטלוג */
+  speechRate?: Step;
+  /** עוצמה, יחסית לקול. רק בקולות שתומכים בזה (Cartesia sonic-3) */
+  volume?: Step;
+  backgroundSound?: BackgroundSound;
 }
 
 /** קול כפי שהדפדפן רואה אותו. פרטי הספק נשארים בשרת. */
@@ -26,6 +38,8 @@ export interface Voice {
   /** קובץ דוגמה מוקלט מראש. null עד שמקליטים דוגמה. */
   sampleUrl: string | null;
   tier: "standard" | "premium";
+  /** האם אפשר לשנות לקול הזה עוצמה (ב-Vapi: רק Cartesia sonic-3) */
+  supportsVolume: boolean;
 }
 
 /** הניצול של לקוח משלם במחזור החודשי הנוכחי, לתצוגה בדף שלו */

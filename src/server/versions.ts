@@ -10,6 +10,8 @@ import { accessLinks, auditLog, botVersions, tenants, voices, type Tenant } from
 import type { BotSettings, CustomerVersion } from "@/lib/types";
 import { describeChanges } from "@/lib/version-diff";
 import { normalizeSettings } from "@/lib/validation";
+import { withCurrentStyle } from "@/lib/conversation-style";
+import { adjustVoice, presetsForTenant, timingFields } from "./conversation-style";
 import { ServiceError } from "./errors";
 import { buildVoice, firstMessageFields, modelWithPrompt, promptFromModel } from "./vapi";
 import { isVapiConfigured, vapi, VapiError, type AssistantFields } from "./vapi-client";
@@ -142,8 +144,11 @@ export async function restoreVersion(tenant: Tenant, versionId: string) {
     ? await db.select().from(botVersions).where(eq(botVersions.id, tenant.currentVersionId))
     : [];
 
+  // נקרא לפני הטרנזקציה, כדי לא לפתוח שאילתה נוספת באמצעה
+  const presets = (await presetsForTenant(tenant.id)).effective;
+
   const created = await db.transaction(async (tx) => {
-    let settings = normalizeSettings(target.settings);
+    let settings = normalizeSettings(withCurrentStyle(target.settings, current?.settings ?? null));
     let payload: Record<string, unknown> | null = null;
 
     if (isCustomer) {
@@ -154,10 +159,16 @@ export async function restoreVersion(tenant: Tenant, versionId: string) {
         if (!settings.prompt) settings = { ...settings, prompt: livePrompt };
 
         const fields: AssistantFields = {
-          voice: buildVoice(voice, assistant.voice),
+          voice: adjustVoice(buildVoice(voice, assistant.voice), settings.speechRate, settings.volume),
           ...firstMessageFields(settings),
           endCallMessage: settings.closingMessage,
         };
+        if (settings.responseStyle) {
+          const timing = timingFields(assistant, presets[settings.responseStyle]);
+          fields.startSpeakingPlan = timing.startSpeakingPlan;
+          if (timing.transcriber) fields.transcriber = timing.transcriber;
+        }
+        if (settings.backgroundSound) fields.backgroundSound = settings.backgroundSound;
         if (settings.prompt && settings.prompt !== livePrompt && assistant.model) {
           fields.model = modelWithPrompt(assistant.model, settings.prompt);
         }

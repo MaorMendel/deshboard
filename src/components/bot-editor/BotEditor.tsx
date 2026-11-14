@@ -9,6 +9,14 @@ import { CallFlow } from "./CallFlow";
 import { ComingSoon } from "./ComingSoon";
 import { UsageCard } from "./UsageCard";
 import { VersionsPanel } from "./VersionsPanel";
+import {
+  BackgroundPicker,
+  ResponseStylePicker,
+  SPEECH_RATE_LABELS,
+  StepSlider,
+  VOLUME_LABELS,
+} from "./ConversationStyle";
+import { withCurrentStyle } from "@/lib/conversation-style";
 import { VoicePicker } from "./VoicePicker";
 
 type Busy = null | "update" | "test";
@@ -120,7 +128,8 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
   function restoreVersion(v: CustomerVersion) {
     const voiceAvailable = voiceIds.includes(v.settings.voiceId);
     const next: BotSettings = {
-      ...v.settings,
+      // גרסה ישנה בלי סגנון שיחה: נשאר מה שעל המסך
+      ...withCurrentStyle(v.settings, draft),
       voiceId: voiceAvailable ? v.settings.voiceId : draft.voiceId,
       prompt: v.settings.prompt?.trim() ? v.settings.prompt : draft.prompt,
     };
@@ -221,8 +230,37 @@ export function BotEditor({ accessKey, initialData }: { accessKey: string; initi
                 onSelect={(id) => change("voiceId", id)}
               />
             </div>
+            <div className="mt-8 flex flex-col gap-6">
+              <StepSlider
+                id="speech-rate"
+                label="קצב דיבור"
+                labels={SPEECH_RATE_LABELS}
+                value={draft.speechRate}
+                onChange={(v) => change("speechRate", v)}
+              />
+              <StepSlider
+                id="volume"
+                label="עוצמת קול"
+                labels={VOLUME_LABELS}
+                value={selectedVoice?.supportsVolume ? draft.volume : 0}
+                onChange={(v) => change("volume", v)}
+                disabledNote={
+                  selectedVoice?.supportsVolume ? undefined : "בקול הזה אי אפשר לשנות עוצמה. בקולות אחרים ברשימה אפשר."
+                }
+              />
+            </div>
           </section>
         </div>
+
+        <section aria-labelledby="style-title" className="mt-16">
+          <h2 id="style-title" className="text-xl font-semibold">
+            סגנון השיחה
+          </h2>
+          <div className="mt-6 grid gap-8 md:grid-cols-2">
+            <ResponseStylePicker value={draft.responseStyle} onChange={(v) => change("responseStyle", v)} />
+            <BackgroundPicker value={draft.backgroundSound} onChange={(v) => change("backgroundSound", v)} />
+          </div>
+        </section>
 
         <section aria-labelledby="versions-title" className="mt-16">
           <h2 id="versions-title" className="text-xl font-semibold">
