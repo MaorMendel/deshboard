@@ -176,6 +176,46 @@ export const accessLinks = pgTable(
 
 // ---------- calls: כל שיחה, אמיתית או ניסיון. מכאן המערכת הראשית מקבלת את הדקות. ----------
 
+// ---------- response_presets: מה זה "מענה מהיר" ו"מענה סבלני" ----------
+
+/** הזמנים של קצב מענה אחד, בשניות */
+export interface ResponseTiming {
+  /** startSpeakingPlan.waitSeconds: השהיית בסיס לפני שהבוט מדבר */
+  waitSeconds: number;
+  /** transcriptionEndpointingPlan: אחרי משפט שנגמר בסימן פיסוק */
+  onPunctuationSeconds: number;
+  /** ...שנגמר בלי סימן פיסוק */
+  onNoPunctuationSeconds: number;
+  /** ...שנגמר במספר */
+  onNumberSeconds: number;
+  /** כמה שקט התמלול מחכה לפני שהוא קובע שהמתקשר סיים (השדה תלוי בספק התמלול) */
+  endOfTurnSeconds: number;
+}
+
+/**
+ * scope = "global": הערכים לכל הלקוחות. scope = מזהה לקוח: ערכים משלו, שגוברים על הכלליים.
+ * אצל לקוח, fast או patient יכולים להיות null: אז חלים הכלליים לאותו קצב.
+ * טבלה נפרדת ולא עמודה ב-tenants, כדי שאם המיגרציה עוד לא רצה, שום דבר אחר לא יישבר.
+ */
+export const responsePresets = pgTable("response_presets", {
+  scope: text("scope").primaryKey(),
+  fast: jsonb("fast").$type<ResponseTiming>(),
+  patient: jsonb("patient").$type<ResponseTiming>(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * אילו אפשרויות של סגנון השיחה פתוחות לכל לקוח (קצב מענה, קצב דיבור, עוצמה, רקע).
+ * לקוח בלי שורה כאן: הכול סגור. טבלה נפרדת, כדי שבלי המיגרציה שום דבר אחר לא יישבר.
+ */
+export const customerFeatures = pgTable("customer_features", {
+  tenantId: uuid("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  features: jsonb("features").$type<Record<string, boolean>>().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ---------- sync_state: עד איפה השיחות מסונכרנות מ-Vapi ----------
 
 /**

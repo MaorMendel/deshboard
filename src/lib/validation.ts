@@ -9,7 +9,7 @@ export const PROMPT_MAX = 20_000;
  * המגבלה ללקוח. הנחיות ארוכות נשלחות למודל בכל תור בשיחה, ולכן מייקרות כל דקה.
  * לקוח שכבר יש לו הנחיות ארוכות יותר (כי אדמין כתב אותן) יכול להמשיך לערוך אותן, אבל לא להאריך מעבר לזה.
  */
-export const CUSTOMER_PROMPT_MAX = 8_000;
+export const CUSTOMER_PROMPT_MAX = 16_000;
 
 /** כמה תווים מותר ללקוח, לפי אורך ההנחיות שיש לבוט שלו עכשיו */
 export function customerPromptLimit(currentLength: number): number {
@@ -66,6 +66,11 @@ export function normalizeSettings(settings: BotSettings): BotSettings {
     openingMessage: settings.openingMessage.trim(),
     closingMessage: settings.closingMessage.trim(),
     prompt: (settings.prompt ?? "").trim(),
+    // סגנון השיחה: רק מה שהוגדר. חסר = לא נוגעים (גרסאות ישנות, דפדפן עם גרסה קודמת של הדף)
+    ...(settings.responseStyle !== undefined ? { responseStyle: settings.responseStyle } : {}),
+    ...(settings.speechRate !== undefined ? { speechRate: settings.speechRate } : {}),
+    ...(settings.volume !== undefined ? { volume: settings.volume } : {}),
+    ...(settings.backgroundSound !== undefined ? { backgroundSound: settings.backgroundSound } : {}),
   };
 }
 
@@ -75,6 +80,10 @@ export function sameSettings(a: BotSettings, b: BotSettings): boolean {
     a.firstSpeaker === b.firstSpeaker &&
     a.openingMessage.trim() === b.openingMessage.trim() &&
     a.closingMessage.trim() === b.closingMessage.trim() &&
-    (a.prompt ?? "").trim() === (b.prompt ?? "").trim()
+    (a.prompt ?? "").trim() === (b.prompt ?? "").trim() &&
+    (a.responseStyle ?? null) === (b.responseStyle ?? null) &&
+    (a.speechRate ?? 0) === (b.speechRate ?? 0) &&
+    (a.volume ?? 0) === (b.volume ?? 0) &&
+    (a.backgroundSound ?? "office") === (b.backgroundSound ?? "office")
   );
 }

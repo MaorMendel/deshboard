@@ -24,6 +24,9 @@ export default function AdminLayout({ children }: LayoutProps<"/admin">) {
           <Link href="/admin/voices" className="text-sm text-ink-soft hover:text-ink">
             קולות
           </Link>
+          <Link href="/admin/response" className="text-sm text-ink-soft hover:text-ink">
+            קצב מענה
+          </Link>
         </nav>
         <form action={logoutAction}>
           <button type="submit" className="text-sm text-ink-soft hover:text-ink">

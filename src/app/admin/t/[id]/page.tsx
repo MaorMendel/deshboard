@@ -7,12 +7,18 @@ import { PROMPT_MAX } from "@/lib/validation";
 import { describeChanges } from "@/lib/version-diff";
 import { findTenant, getAssistantPrompt, tenantDetail, type TenantDetail } from "@/server/admin-service";
 import { listVersions, type VersionEntry, type VersionHistory } from "@/server/versions";
+import { tenantTimingInfo, type TenantTimingInfo } from "@/server/response-admin";
+import { FEATURE_KEYS, FEATURE_LABELS, RESPONSE_STYLES } from "@/lib/conversation-style";
+import { featuresForTenant } from "@/server/conversation-style";
+import { TimingTable } from "../../response/timing-table";
 import { ServiceError } from "@/server/errors";
 import { isVapiConfigured } from "@/server/vapi-client";
 import {
   convertDemoAction,
   issueLinkAction,
   restoreVersionAction,
+  saveFeaturesAction,
+  saveTenantPresetsAction,
   revokeLinksAction,
   savePromptAction,
   setStatusAction,
@@ -248,6 +254,18 @@ async function Detail({
         </Section>
       )}
 
+      <Section title="אפשרויות בדף הלקוח">
+        <Suspense fallback={<p className="text-sm text-ink-soft">טוען...</p>}>
+          <FeaturesSection tenantId={tenant.id} />
+        </Suspense>
+      </Section>
+
+      <Section title="קצב מענה">
+        <Suspense fallback={<p className="text-sm text-ink-soft">טוען מ-Vapi...</p>}>
+          <ResponseSection tenantId={tenant.id} />
+        </Suspense>
+      </Section>
+
       <Section title="היסטוריית גרסאות">
         <p className="mb-4 text-sm text-ink-soft">
           כל &quot;עדכן את הבוט&quot; של הלקוח, וכל עריכת הנחיות מכאן, נשמרים כגרסה. חזרה לגרסה קודמת יוצרת גרסה חדשה,
@@ -294,6 +312,92 @@ async function Detail({
         )}
       </Section>
     </main>
+  );
+}
+
+async function FeaturesSection({ tenantId }: { tenantId: string }) {
+  const features = await featuresForTenant(tenantId);
+  return (
+    <ActionForm action={saveFeaturesAction.bind(null, tenantId)} submitLabel="לשמור">
+      <p className="text-sm text-ink-soft">
+        מה הלקוח יכול לשנות בעצמו בדף שלו. סגור: הלקוח לא רואה את האפשרות, והשרת מתעלם ממנה. פתיחה או סגירה לא
+        משנות כלום ב-Vapi: מה שכבר מוגדר ב-assistant נשאר, עד שהלקוח בוחר משהו בעצמו.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {FEATURE_KEYS.map((k) => (
+          <label key={k} className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name={`feature.${k}`}
+              defaultChecked={features[k]}
+              className="size-4 accent-[var(--color-call)]"
+            />
+            {FEATURE_LABELS[k]}
+          </label>
+        ))}
+      </div>
+    </ActionForm>
+  );
+}
+
+async function ResponseSection({ tenantId }: { tenantId: string }) {
+  let info: TenantTimingInfo;
+  let open: boolean;
+  try {
+    [info, open] = await Promise.all([
+      findTenant(tenantId).then(tenantTimingInfo),
+      featuresForTenant(tenantId).then((f) => f.responseStyle),
+    ]);
+  } catch (err) {
+    console.error("timing:", err);
+    return <p className="text-sm text-danger">לא הצלחתי לטעון את קצב המענה.</p>;
+  }
+  const { presets, choice, live } = info;
+  const hasOverride = Boolean(presets.override.fast || presets.override.patient);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="text-sm">
+        {!open && (
+          <p className="mb-2 rounded-lg bg-paper px-3 py-2 text-ink-soft">
+            קצב המענה סגור ללקוח הזה (ב&quot;אפשרויות בדף הלקוח&quot;). הערכים כאן יחולו כשתפתח אותו והוא יבחר.
+          </p>
+        )}
+        <p>
+          הלקוח בחר:{" "}
+          <strong>{choice ? RESPONSE_STYLES[choice].title : "עוד לא בחר (הבוט עובד עם מה שמוגדר בו ב-Vapi)"}</strong>
+        </p>
+        {live && (
+          <p className="mt-1 text-ink-soft">
+            ספק התמלול: <span dir="ltr">{live.transcriber ?? "לא מוגדר"}</span>.{" "}
+            {live.smartEndpointing && "כרגע מופעל Smart Endpointing. הוא ייכבה כשהלקוח יבחר קצב. "}
+            {live.notes.join(" ")}
+          </p>
+        )}
+      </div>
+      <ActionForm
+        action={saveTenantPresetsAction.bind(null, tenantId)}
+        submitLabel="לשמור ללקוח הזה"
+        confirmText={choice ? "לשמור, ולעדכן עכשיו את ה-assistant של הלקוח ב-Vapi?" : undefined}
+      >
+        <p className="text-sm text-ink-soft">
+          כדי שללקוח יהיו ערכים משלו, מסמנים &quot;ערכים משלו&quot; בקצב הרצוי ומשנים. קצב שלא מסומן עובד עם הערכים
+          הכלליים (ממסך <Link href="/admin/response" className="text-call hover:underline">קצב מענה</Link>).
+        </p>
+        <TimingTable
+          values={presets.effective}
+          custom={{ fast: Boolean(presets.override.fast), patient: Boolean(presets.override.patient) }}
+        />
+      </ActionForm>
+      {hasOverride && (
+        <ActionForm
+          action={saveTenantPresetsAction.bind(null, tenantId)}
+          submitLabel="לחזור לערכים הכלליים"
+          subtle
+          confirmText="למחוק את הערכים המיוחדים של הלקוח ולחזור לערכים הכלליים?"
+        />
+      )}
+    </div>
   );
 }
 
